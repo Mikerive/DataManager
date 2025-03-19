@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug PostgreSQL",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "C:\\pgsql\\bin\\postgres.exe",
+            "args": ["-D", "C:\\pgsql\\data"],
+            "cwd": "${workspaceFolder}",
+            "console": "externalTerminal",
+            "MIMode": "gdb"
+        }
+    ]
+}

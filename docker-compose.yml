@@ -1,0 +1,67 @@
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 4G
+    ports:
+      - "8000:8000"
+    environment:
+      # Production database
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-algotrader}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      # Test database config
+      TEST_DB_HOST: ${TEST_DB_HOST:-db}
+      TEST_DB_PORT: ${TEST_DB_PORT:-5432}
+      TEST_DB_NAME: ${TEST_DB_NAME:-algotrader_test}
+      TEST_DB_USER: ${TEST_DB_USER:-postgres}
+      TEST_DB_PASSWORD: ${TEST_DB_PASSWORD:-postgres}
+      # Set Python path to include /app directory
+      PYTHONPATH: /app
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - algotrader_network
+    restart: unless-stopped
+
+  db:
+    image: timescale/timescaledb:2.18.1-pg16
+    container_name: algotrader_db
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 4G
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-algotrader}
+      POSTGRES_MULTIPLE_DATABASES: ${DB_NAME:-algotrader},${TEST_DB_NAME:-algotrader_test}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-algotrader}"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - algotrader_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  algotrader_network:
+    driver: bridge
