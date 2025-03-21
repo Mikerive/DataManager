@@ -1,37 +1,4 @@
 services:
-  backend:
-    build: 
-      context: ./backend
-      dockerfile: Dockerfile
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 4G
-    ports:
-      - "8000:8000"
-    environment:
-      # Production database
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-algotrader}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      # Test database config
-      TEST_DB_HOST: ${TEST_DB_HOST:-db}
-      TEST_DB_PORT: ${TEST_DB_PORT:-5432}
-      TEST_DB_NAME: ${TEST_DB_NAME:-algotrader_test}
-      TEST_DB_USER: ${TEST_DB_USER:-postgres}
-      TEST_DB_PASSWORD: ${TEST_DB_PASSWORD:-postgres}
-      # Set Python path to include /app directory
-      PYTHONPATH: /app
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - algotrader_network
-    restart: unless-stopped
-
   db:
     image: timescale/timescaledb:2.18.1-pg16
     container_name: algotrader_db

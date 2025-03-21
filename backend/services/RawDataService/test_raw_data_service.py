@@ -13,6 +13,7 @@ import logging
 import os
 from dotenv import load_dotenv
 import sys
+import time
 
 # Add the parent directory to the path so we can import the module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -20,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from backend.services.RawDataService.RawDataService import RawDataService
 from backend.db.Database import Database
 from backend.db.models.RawData import RawData
+from backend.db.models.Tickers import Tickers
 
 # Load environment variables
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -77,7 +79,7 @@ class TestRawDataService:
         """Test that service initializes correctly."""
         assert service is not None
         assert service.tiingo is not None
-        assert service._is_connected is False
+        assert service._is_connected is True
         assert service.debug_mode is False
     
     @pytest.mark.asyncio
@@ -104,15 +106,6 @@ class TestRawDataService:
         assert service._db is not None
     
     @pytest.mark.asyncio
-    async def test_get_database_info(self, service):
-        """Test getting database information."""
-        tables_info, raw_data_tables, processed_tables = await service.get_database_info()
-        
-        assert isinstance(tables_info, dict)
-        assert isinstance(raw_data_tables, list)
-        assert isinstance(processed_tables, list)
-    
-    @pytest.mark.asyncio
     async def test_sync_ticker_metadata(self, service):
         """Test syncing ticker metadata."""
         ticker_id = await service.sync_ticker_metadata(TEST_TICKER)
@@ -126,8 +119,8 @@ class TestRawDataService:
         """Test downloading ticker data."""
         result = await service.download_ticker_data(
             ticker=TEST_TICKER,
-            days_back=TEST_DAYS,
-            include_extended_hours=True
+            include_extended_hours=True,
+            full_history=False
         )
         
         assert result['success'] is True
@@ -140,69 +133,17 @@ class TestRawDataService:
         # First download some data
         await service.download_ticker_data(
             ticker=TEST_TICKER,
-            days_back=TEST_DAYS,
-            include_extended_hours=True
+            include_extended_hours=True,
+            full_history=False
         )
         
-        # Then retrieve it - use lowercase for table name as PostgreSQL is case-insensitive
-        table_name = f"raw_data_{TEST_TICKER.lower()}"
-        df = await service.get_price_data(table_name)
+        # Then retrieve it - use uppercase for ticker symbol
+        df = await service.get_price_data(TEST_TICKER)
         
         assert isinstance(df, pd.DataFrame)
         assert not df.empty
         assert all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume'])
         assert len(df) > 0
-    
-    @pytest.mark.asyncio
-    async def test_download_progress(self, service):
-        """Test download progress tracking."""
-        # Start a download
-        download_task = asyncio.create_task(
-            service.download_ticker_data(
-                ticker=TEST_TICKER,
-                days_back=TEST_DAYS,
-                include_extended_hours=True
-            )
-        )
-        
-        # Check progress while downloading
-        progress = service.get_download_progress(TEST_TICKER)
-        assert progress is not None
-        assert 'status' in progress
-        assert 'progress' in progress
-        assert 'message' in progress
-        
-        # Wait for download to complete
-        await download_task
-    
-    @pytest.mark.asyncio
-    async def test_download_logs(self, service):
-        """Test download logging."""
-        # Start a download and wait for it to complete
-        result = await service.download_ticker_data(
-            ticker=TEST_TICKER,
-            days_back=TEST_DAYS,
-            include_extended_hours=True
-        )
-        
-        # Check logs
-        logs = service.get_download_logs(TEST_TICKER)
-        
-        # Print logs for debugging
-        print(f"Download logs for {TEST_TICKER}: {logs}")
-        
-        assert logs is not None
-        
-        # Support both string logs and dictionary logs for backward compatibility
-        if logs and isinstance(logs[0], dict):
-            assert all(isinstance(log, dict) and 'message' in log for log in logs)
-        else:
-            # If logs are empty, we should at least see some messages logged by _init_download_progress
-            # Force an initialization to ensure we have logs
-            service._init_download_progress(TEST_TICKER)
-            logs = service.get_download_logs(TEST_TICKER)
-            assert len(logs) > 0
-            assert all(isinstance(log, str) for log in logs)
     
     @pytest.mark.asyncio
     async def test_cleanup(self, service):
@@ -236,9 +177,8 @@ class TestRawDataService:
         assert result["ticker"] == TEST_TICKER
         assert 'error' not in result
         
-        # Retrieve the data from the database - use lowercase for table name
-        table_name = f"raw_data_{TEST_TICKER.lower()}"
-        df = await service.get_price_data(table_name)
+        # Retrieve the data from the database using uppercase ticker symbol
+        df = await service.get_price_data(TEST_TICKER)
         
         # Verify we have data
         assert not df.empty, "No data was retrieved from the database"
@@ -274,261 +214,93 @@ class TestRawDataService:
         assert 'debug_mode' in debug_info
         assert 'tiingo_base_url' in debug_info
         assert 'tiingo_iex_url' in debug_info
-        assert 'rate_limit' in debug_info
+        assert 'rate_limiter' in debug_info
         assert 'api_key_masked' in debug_info
     
     @pytest.mark.asyncio
-    async def test_construct_debug_url(self, service):
-        """Test constructing a debug URL."""
-        # Test with days_back parameter
-        days_back = 30
-        
-        debug_url = service.construct_debug_url(
+    async def test_update_recent_data(self, service):
+        """Test updating recent data for a ticker."""
+        # First ensure we have some data to update
+        await service.download_ticker_data(
             ticker=TEST_TICKER,
-            days_back=days_back
+            include_extended_hours=True,
+            full_history=False
         )
         
-        assert debug_url is not None
-        assert isinstance(debug_url, str)
-        assert TEST_TICKER.lower() in debug_url
-        assert "startDate=" in debug_url
-        assert "endDate=" in debug_url
-        assert "token=" in debug_url
-        assert len(debug_url) > 50  # URL should be reasonably long
-        
-        # Test with explicit dates
-        start_date = "2023-01-01"
-        end_date = "2023-01-31"
-        
-        debug_url = service.construct_debug_url(
+        # Now update the data
+        result = await service.update_recent_data(
             ticker=TEST_TICKER,
-            days_back=0,  # Ignored when start_date and end_date are provided
-            start_date=start_date,
-            end_date=end_date
+            include_extended_hours=True
         )
         
-        assert debug_url is not None
-        assert isinstance(debug_url, str)
-        assert TEST_TICKER.lower() in debug_url
-        assert start_date in debug_url
-        assert end_date in debug_url
+        assert result['success'] is True
+        assert result['ticker'] == TEST_TICKER
         
-        # API key should be masked (contains * characters)
-        assert "token=" in debug_url
-        token_part = debug_url.split("token=")[1].split("&")[0]
-        assert "*" in token_part
+        # The result could either indicate new data was added or that no new data was available
+        if 'rows_added' in result:
+            assert isinstance(result['rows_added'], int)
+        elif 'message' in result:
+            assert "No new data" in result['message']
     
     @pytest.mark.asyncio
-    async def test_trace_api_call(self, service):
-        """Test tracing an API call."""
-        # Use a small days_back value for faster test
-        days_back = 1
+    async def test_bulk_update_tickers(self, service):
+        """Test bulk updating multiple tickers."""
+        # Use a small list of tickers for quicker tests
+        test_tickers = [TEST_TICKER, "MSFT"]
         
-        result = await service.trace_api_call(
-            ticker=TEST_TICKER,
-            days_back=days_back
+        result = await service.bulk_update_tickers(
+            tickers=test_tickers,
+            include_extended_hours=True
         )
         
-        # Check the result structure (whether success or not)
         assert isinstance(result, dict)
-        assert "success" in result
-        assert "debug_info" in result
+        assert 'tickers_processed' in result
+        assert result['tickers_processed'] == len(test_tickers)
+        assert 'tickers_successful' in result
+        assert 'details' in result
+        assert len(result['details']) == len(test_tickers)
         
-        # Check debug info content
-        debug_info = result["debug_info"]
-        assert "api_url" in debug_info
-        assert "ticker" in debug_info
-        assert debug_info["ticker"] == TEST_TICKER
-        assert "days_back" in debug_info
-        assert debug_info["days_back"] == days_back
-        
-        # If the call succeeded, check for data_points
-        if result["success"]:
-            assert "data_points" in debug_info
-        # If it failed, check for error information
-        else:
-            assert "error" in result
+        # Verify each ticker has a result
+        for ticker in test_tickers:
+            assert ticker in result['details']
+            assert 'success' in result['details'][ticker]
     
     @pytest.mark.asyncio
-    async def test_download_with_debug_mode(self, service):
-        """Test downloading ticker data with debug mode parameter."""
-        # Verify debug mode is initially off
-        assert service.debug_mode is False
+    async def test_verify_rate_limiting(self, service):
+        """Test that rate limiting is properly implemented."""
+        # Verify rate limiter is initialized
+        assert hasattr(service.tiingo, 'rate_limiter')
+        assert service.tiingo.rate_limiter is not None
         
-        # Download with debug mode temporarily enabled
-        result = await service.download_ticker_data(
-            ticker=TEST_TICKER,
-            days_back=1,  # Just 1 day to be quick
-            debug_mode=True
-        )
+        # Verify rate limiter has proper limits
+        assert service.tiingo.rate_limiter.hourly_limit == 10000
+        assert service.tiingo.rate_limiter.daily_limit == 100000
         
-        # Debug mode should be temporarily enabled for this call
-        # but then restored to its original value
-        assert service.debug_mode is False
+        # Test making multiple rapid requests to verify rate limiting
+        start_time = time.time()
         
-        # The download might succeed or fail depending on external factors,
-        # but we're testing the debug_mode functionality here
-        assert "success" in result
-        assert "ticker" in result
-        assert result["ticker"] == TEST_TICKER
-        assert "download_id" in result
-        
-        # Since debug_mode was True, debug_info should always be present
-        assert "debug_info" in result
-        
-        # Check that debug_info contains the expected fields
-        debug_info = result["debug_info"]
-        assert "api_url" in debug_info
-        assert "days_back" in debug_info
-        assert debug_info["days_back"] == 1
-        assert "debug_mode" in debug_info
-        assert debug_info["debug_mode"] is True
-    
-    @pytest.mark.asyncio
-    async def test_diagnose_api_error(self, service):
-        """Test that debug mode provides useful diagnostics for API errors."""
-        # Use an invalid ticker that will produce an API error
-        invalid_ticker = "INVALID123456"
-        days_back = 7
-        
-        # First, try downloading without debug mode
-        result = await service.download_ticker_data(invalid_ticker, days_back=days_back)
-        
-        # Verify that the download failed
-        assert result["success"] is False
-        assert "error" in result
-        assert result["ticker"] == invalid_ticker
-        assert "download_id" in result
-        
-        # Now use trace_api_call to get detailed debugging information
-        trace_result = await service.trace_api_call(invalid_ticker, days_back=days_back)
-        
-        # Verify we get detailed debug information
-        assert trace_result["success"] is False
-        assert "error" in trace_result
-        assert "debug_info" in trace_result
-        
-        # Check that debug_info contains useful information
-        debug_info = trace_result["debug_info"]
-        assert "api_url" in debug_info
-        
-        # In this case, with our mock or intercepted API calls, we might not always get the same error structure
-        # The main point is that we get back detailed debug info for diagnosis
-        assert isinstance(debug_info, dict)
-        assert len(debug_info) > 3  # Should have several debug fields
-        
-        # For a 404 error (ticker not found), we may have specific information
-        # But this is not guaranteed in a test environment
-        if "status_code" in debug_info and debug_info["status_code"] == 404:
-            assert "ticker_exists" in debug_info
-            assert debug_info["ticker_exists"] is False
-            assert "suggestion" in debug_info
-        
-        # Finally, try download with debug_mode=True to get inline debugging
-        debug_result = await service.download_ticker_data(
-            invalid_ticker, days_back=days_back, debug_mode=True
-        )
-        
-        # Verify the debug information is included in the regular download result
-        assert debug_result["success"] is False
-        assert "error" in debug_result
-        assert "debug_info" in debug_result
-        assert "api_url" in debug_result["debug_info"]
-    
-    @pytest.mark.asyncio
-    async def test_database_diagnostics(self, service):
-        """Test database diagnostics method."""
-        # Run diagnostics
-        diagnostics = await service.database_diagnostics()
-        
-        # Basic verification
-        assert diagnostics is not None
-        assert isinstance(diagnostics, dict)
-        assert "timestamp" in diagnostics
-        assert "service_info" in diagnostics
-        assert "connection_status" in diagnostics
-        
-        # Service info validation
-        service_info = diagnostics["service_info"]
-        assert "debug_mode" in service_info
-        assert "is_connected" in service_info
-        assert "use_test_db" in service_info
-        
-        # Database info validation (if connected)
-        if diagnostics["connection_status"] == "connected":
-            assert "database_info" in diagnostics
-            db_info = diagnostics["database_info"]
-            assert "host" in db_info
-            assert "port" in db_info
-            assert "name" in db_info
-            
-            # Tables info validation (if included)
-            if "tables" in diagnostics:
-                tables = diagnostics["tables"]
-                assert "count" in tables
-                assert "raw_data_tables" in tables
-                assert "processed_tables" in tables
-                
-            # Test query validation (if included)
-            if "test_query" in diagnostics:
-                test_query = diagnostics["test_query"]
-                assert "success" in test_query
-                
-                # If query succeeded, check result
-                if test_query["success"]:
-                    assert "result" in test_query
-        
-        # Connection error validation (if not connected)
-        elif diagnostics["connection_status"] == "error":
-            assert "connection_error" in diagnostics
-    
-    @pytest.mark.asyncio
-    async def test_verify_tables(self, service):
-        """Test verify_tables method to diagnose table issues."""
-        # Run table verification
-        table_diagnostics = await service.verify_tables()
-        
-        # Basic verification
-        assert table_diagnostics is not None
-        assert isinstance(table_diagnostics, dict)
-        assert "timestamp" in table_diagnostics
-        assert "tables_checked" in table_diagnostics
-        assert "tables_ok" in table_diagnostics
-        assert "tables_with_issues" in table_diagnostics
-        assert "table_details" in table_diagnostics
-        
-        # Get details about a specific table if possible
-        if "error" not in table_diagnostics:
-            # Try to create a test table first by downloading data
-            await service.download_ticker_data(
+        # Make a few requests in quick succession
+        results = []
+        for _ in range(3):
+            result = await service.download_ticker_data(
                 ticker=TEST_TICKER,
-                days_back=1,  # Minimal data
-                include_extended_hours=False
+                include_extended_hours=True,
+                full_history=False
             )
-            
-            # Now check the specific table
-            table_diagnostics = await service.verify_tables(TEST_TICKER)
-            
-            # Basic verification
-            assert table_diagnostics is not None
-            assert isinstance(table_diagnostics, dict)
-            assert "tables_checked" in table_diagnostics
-            
-            # If table was created, check its structure
-            table_name = f"raw_data_{TEST_TICKER.lower()}"
-            if table_diagnostics["tables_checked"] > 0 and table_name in table_diagnostics["table_details"]:
-                table_details = table_diagnostics["table_details"][table_name]
-                assert "status" in table_details
-                assert "columns" in table_details
-                assert "row_count" in table_details
-                
-                # Check that required columns are present
-                column_names = [col["name"] for col in table_details["columns"]]
-                for required_col in ["timestamp", "open", "high", "low", "close", "volume", "ticker"]:
-                    if required_col not in column_names:
-                        logging.warning(f"Required column '{required_col}' missing from {table_name}")
-                        
-                # Log any issues found
-                if table_details["issues"]:
-                    for issue in table_details["issues"]:
-                        logging.warning(f"Table issue detected: {issue}") 
+            results.append(result)
+        
+        # Measure elapsed time
+        elapsed = time.time() - start_time
+        
+        # Verify all requests were successful
+        assert all(result['success'] for result in results)
+        
+        # Verify rate limiter is working (should have some delay between requests)
+        # With our new rate limiter, there should be some minimum delay between requests
+        min_interval = 3600 / service.tiingo.rate_limiter.hourly_limit
+        
+        # We made 3 requests, so we should have at least 2 intervals of delay
+        expected_min_delay = min_interval * 2
+        
+        # Allow some margin for timing variations
+        assert elapsed >= expected_min_delay * 0.5, f"Rate limiting not working properly: elapsed={elapsed}, expected at least {expected_min_delay*0.5}" 

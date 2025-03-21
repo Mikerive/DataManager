@@ -1,12 +1,12 @@
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import time
 from typing import List, Dict, Optional, Union, Tuple, Any, Callable
 import pandas as pd
 
-from ...lib.Tiingo import Tiingo
+from backend.lib.Tiingo import Tiingo
 from backend.db.models.Tickers import Tickers
 from backend.db.models.RawData import RawData
 from backend.db.Database import Database
@@ -41,132 +41,36 @@ class RawDataService:
         
         # Set debug mode on Tiingo instance
         if debug_mode:
-            self.set_debug_mode(True)
-        
-    def set_debug_mode(self, enabled: bool = True) -> None:
-        """
-        Enable or disable debug mode for API request/response logging.
-        
-        Args:
-            enabled: Whether to enable debug mode
-        """
-        self.debug_mode = enabled
-        # Propagate to Tiingo instance
-        self.tiingo.set_debug_mode(enabled)
-        self.logger.info(f"Debug mode {'enabled' if enabled else 'disabled'}")
+            self.tiingo.set_debug_mode(enabled=True)
         
     async def _ensure_connected(self):
         """
         Ensure database connection is established.
         This is an internal method used by other service methods.
         """
-        # Check both the flag and whether the pool is actually valid
         if not self._is_connected or self._db is None or not hasattr(self._db, 'pool') or self._db.pool is None:
             try:
-                # Create a new Database instance with test db setting if specified
                 self._db = Database(
                     owner_name="RawDataService",
                     use_test_db=self.use_test_db,
-                    debug_mode=self.debug_mode  # Pass debug mode to Database
+                    debug_mode=self.debug_mode
                 )
                 
-                # Let the Database class handle the connection and retries
                 await self._db.connect()
                 self._is_connected = True
                 
-                # Log which database we're using
                 db_info = self._db.get_connection_info()
                 self.logger.info(f"Database connection established to {db_info['host']}:{db_info['port']}/{db_info['name']}")
-                
-                if self.debug_mode:
-                    self.logger.debug("Database connection details:")
-                    for key, value in db_info.items():
-                        self.logger.debug(f"  {key}: {value}")
             except Exception as e:
                 self.logger.error(f"Error connecting to database: {str(e)}")
-                if self.debug_mode:
-                    self.logger.debug(f"Database connection error details: {str(e)}")
-                    import traceback
-                    self.logger.debug(traceback.format_exc())
                 raise
                 
-    async def get_database_info(self):
+    async def get_price_data(self, ticker: str, start_date: datetime = None, end_date: datetime = None) -> pd.DataFrame:
         """
-        Get information about available tables in the database.
-        Automatically handles database connection.
-        
-        Returns:
-            Tuple containing (all_tables_info, raw_data_tables, processed_tables)
-        """
-        try:
-            start_time = time.time()
-            
-            await self._ensure_connected()
-            
-            # Get all tables from the database using a direct query
-            query = """
-            SELECT tablename 
-            FROM pg_catalog.pg_tables 
-            WHERE schemaname = 'public'
-            ORDER BY tablename;
-            """
-            
-            tables = await self._db.fetch(query)
-                
-            tables_info = {}
-            for table in tables:
-                table_name = table['tablename']
-                # Get row count for each table
-                try:
-                    count_query = f"SELECT COUNT(*) FROM {table_name};"
-                    count = await self._db.fetchval(count_query)
-                    
-                    has_price_data = False
-                    # Check if it's a price data table (has OHLCV columns)
-                    if table_name.startswith('raw_data_') or table_name.startswith('processed_'):
-                        schema_query = f"""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name = '{table_name}'
-                        """
-                        columns = await self._db.fetch(schema_query)
-                        
-                        column_names = [col['column_name'] for col in columns]
-                        required_columns = ['open', 'high', 'low', 'close']
-                        has_price_data = all(col in column_names for col in required_columns)
-                    
-                    tables_info[table_name] = {
-                        'row_count': count,
-                        'has_price_data': has_price_data
-                    }
-                except Exception as e:
-                    self.logger.error(f"Error getting info for table {table_name}: {str(e)}")
-                    tables_info[table_name] = {
-                        'row_count': 0,
-                        'has_price_data': False
-                    }
-            
-            # Filter for raw data tables
-            raw_data_tables = [t for t in tables_info.keys() if t.startswith('raw_data_')]
-            
-            # Filter for processed data tables
-            processed_tables = [t for t in tables_info.keys() if t.startswith('processed_')]
-            
-            duration_ms = (time.time() - start_time) * 1000
-            log_db_success("Get database info", duration_ms, self.logger)
-            
-            return tables_info, raw_data_tables, processed_tables
-        except Exception as e:
-            log_db_error("Get database info", e, self.logger)
-            return {}, [], []
-        
-    async def get_price_data(self, table_name: str, start_date: datetime = None, end_date: datetime = None) -> pd.DataFrame:
-        """
-        Get price data for a specific ticker or table.
-        Automatically handles database connection.
+        Get price data for a specific ticker.
         
         Args:
-            table_name: Name of the table to query (raw_data_TICKER format)
+            ticker: Ticker symbol
             start_date: Start date for filtering data
             end_date: End date for filtering data
             
@@ -174,87 +78,50 @@ class RawDataService:
             DataFrame containing the price data
         """
         try:
-            start_time = time.time()
-            
             await self._ensure_connected()
             
-            self.logger.info(f"Retrieving price data from {table_name}, {start_date} to {end_date}")
+            # Ensure consistent uppercase ticker format
+            ticker = ticker.upper()
             
-            # Extract ticker from table_name and ensure consistent case
-            if table_name.startswith('raw_data_'):
-                ticker = table_name[len('raw_data_'):].upper()
-            else:
-                ticker = table_name.upper()
-                
             # Use the RawData class to retrieve the data
             df = await RawData.get_price_data(ticker, start_date, end_date)
-            
-            duration_ms = (time.time() - start_time) * 1000
-            log_db_success(f"Get price data for {table_name}", duration_ms, self.logger)
-            
             return df
         except Exception as e:
-            log_db_error(f"Get price data for {table_name}", e, self.logger)
+            self.logger.error(f"Error getting price data for {ticker}: {str(e)}")
             return pd.DataFrame()
     
     async def cleanup(self):
-        """
-        Cleanup resources, including database connections.
-        Should be called when the service is no longer needed.
-        """
-        start_time = time.time()
-        
+        """Cleanup database connections."""
         if self._is_connected and self._db is not None:
             try:
                 await self._db.close()
                 self._is_connected = False
                 self._db = None
-                self.logger.info("Database connection closed")
+                
+                # Also close model class connections
+                await RawData.close_connection()
+                await Tickers.close_connection()
             except Exception as e:
-                self.logger.error(f"Error disconnecting from database: {str(e)}")
-                # Don't raise here, as this is cleanup
-        
-        # Close RawData and Tickers class connections
-        try:
-            await RawData.close_connection()
-            await Tickers.close_connection()
-        except Exception as e:
-            self.logger.error(f"Error closing class connections: {str(e)}")
-            # Don't raise here, as this is cleanup
-        
-        # Log the cleanup time
-        duration_ms = (time.time() - start_time) * 1000
-        self.logger.debug(f"Resource cleanup completed in {duration_ms:.2f}ms")
+                self.logger.error(f"Error during cleanup: {str(e)}")
     
-    # Ensure proper cleanup with context manager support
+    # Context manager support
     async def __aenter__(self):
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.cleanup()
     
-    # Regular methods that depend on database connection
-    async def sync_ticker_metadata(self, ticker: str, debug_mode: bool = None) -> int:
+    async def sync_ticker_metadata(self, ticker: str) -> int:
         """
         Sync ticker metadata from Tiingo to the local database.
-        Automatically handles database connection.
         
         Args:
             ticker: Ticker symbol (will be converted to lowercase for API, uppercase for DB)
-            debug_mode: Override the service's debug mode setting for this call only
             
         Returns:
             int: The ticker_id in the database
         """
-        # If debug_mode is provided, temporarily set it for this call
-        previous_debug_mode = None
-        if debug_mode is not None and debug_mode != self.debug_mode:
-            previous_debug_mode = self.debug_mode
-            self.set_debug_mode(debug_mode)
-            
         try:
-            start_time = time.time()
-            
             await self._ensure_connected()
             
             # Convert ticker to lowercase for API calls, uppercase for DB
@@ -289,7 +156,7 @@ class RawDataService:
             delisting_date = None
             status = 'active'
             
-            # Add to database using class method with uppercase ticker
+            # Add to database 
             ticker_id = await Tickers.add_ticker(
                 ticker=db_ticker,
                 name=name,
@@ -300,778 +167,433 @@ class RawDataService:
                 status=status
             )
             
-            duration_ms = (time.time() - start_time) * 1000
-            log_db_success(f"Sync ticker metadata for {ticker}", duration_ms, self.logger)
-            
             return ticker_id
         except Exception as e:
-            log_db_error(f"Sync ticker metadata for {ticker}", e, self.logger)
+            self.logger.error(f"Error syncing ticker metadata for {ticker}: {str(e)}")
             return None
-        finally:
-            # Restore previous debug mode if it was temporarily changed
-            if previous_debug_mode is not None:
-                self.set_debug_mode(previous_debug_mode)
     
-    async def download_ticker_data(self, ticker, days_back=7, include_extended_hours=True, full_history=False, download_id=None, debug_mode=None):
+    async def download_ticker_data(self, ticker: str, include_extended_hours: bool = True, full_history: bool = False) -> Dict:
         """
         Download and store historical ticker data from Tiingo.
         
+        This method automatically determines the appropriate date range and handles
+        month-by-month downloads for historical intraday data, as required by Tiingo's API.
+        Tiingo's API returns data for complete months regardless of the day component in dates.
+        
         Args:
-            ticker (str): The ticker symbol to download data for
-            days_back (int, optional): Number of days to look back. Defaults to 7.
-            include_extended_hours (bool, optional): Whether to include extended hours data. Defaults to True.
-            full_history (bool, optional): Whether to retrieve the complete available history. Defaults to False.
-            download_id (str, optional): A unique identifier for tracking this download. Defaults to None.
-            debug_mode (bool, optional): Temporarily override the service's debug_mode setting for this call.
+            ticker: The ticker symbol to download data for
+            include_extended_hours: Whether to include extended hours data
+            full_history: Whether to retrieve the complete available history from IPO date
         
         Returns:
-            dict: A dictionary with information about the download result
+            Dictionary with information about the download result
         """
-        # Save original debug mode setting
-        original_debug_mode = self.debug_mode
-        
-        # If debug_mode parameter is provided, temporarily override the service's setting
-        if debug_mode is not None:
-            self.debug_mode = debug_mode
-            
         try:
-            start_time = time.time()
+            download_id = f"{ticker}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            self.logger.info(f"Downloading data for {ticker} (full_history={full_history})")
             
-            # Create a download ID if none was provided
-            if download_id is None:
-                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                download_id = f"{ticker}_{timestamp}"
+            # Convert ticker to lowercase for API, uppercase for DB
+            api_ticker = ticker.lower()
+            db_ticker = ticker.upper()
             
-            # Start the actual download
-            success, error_message = await self._download_ticker_data(ticker, days_back, include_extended_hours, full_history, download_id)
+            # Get the current time in UTC
+            current_time = datetime.now(timezone.utc)
             
-            duration_ms = (time.time() - start_time) * 1000
-            self.logger.info(f"Download completed in {duration_ms:.2f}ms (success: {success})")
+            # Ensure ticker exists in the database
+            ticker_record = await Tickers.get_ticker(db_ticker)
+            if not ticker_record:
+                self.logger.info(f"Ticker {ticker} not found, syncing metadata")
+                ticker_id = await self.sync_ticker_metadata(api_ticker)
+                if not ticker_id:
+                    return {"success": False, "ticker": ticker, "error": "Failed to sync ticker metadata"}
+                ticker_record = await Tickers.get_ticker(db_ticker)
             
-            # Build the result object
-            result = {
-                "download_id": download_id,
-                "success": success,
-                "ticker": ticker
-            }
-            
-            # Include error message if there was a failure
-            if not success and error_message:
-                result["error"] = error_message
+            # Determine start date
+            if full_history:
+                # Use the IPO date from the ticker record
+                ipo_date = ticker_record.get('ipo_date')
+                if not ipo_date:
+                    # If no IPO date in database, try to get listing date from Tiingo
+                    listing_date = self.tiingo.get_listing_date(api_ticker)
+                    if listing_date:
+                        ipo_date = listing_date
+                        self.logger.info(f"Using listing date from Tiingo API: {ipo_date.isoformat()}")
+                    else:
+                        # Default to 5 years if no listing date available
+                        ipo_date = current_time - timedelta(days=365*5)
+                        self.logger.info(f"No IPO date available, using 5 years ago as fallback: {ipo_date.isoformat()}")
                 
-            # Include debug information if debug mode is enabled
-            if self.debug_mode:
-                # Construct a debug URL that can be used to manually verify the API call
-                debug_url = self.construct_debug_url(ticker, days_back)
-                
-                # Get basic debug info about the service
-                debug_info = self.get_debug_info()
-                
-                # Add call-specific details
-                debug_info.update({
-                    "api_url": debug_url,
-                    "days_back": days_back,
-                    "include_extended_hours": include_extended_hours,
-                    "full_history": full_history
-                })
-                
-                result["debug_info"] = debug_info
-                
-            return result
-        except Exception as e:
-            self.logger.error(f"Error in download_ticker_data for {ticker}: {str(e)}")
-            return {
-                "download_id": download_id,
-                "success": False,
-                "ticker": ticker,
-                "error": str(e)
-            }
-        finally:
-            # Restore original debug mode setting
-            if debug_mode is not None:
-                self.debug_mode = original_debug_mode
-    
-    async def _download_ticker_data(self, ticker, days_back, include_extended_hours, full_history, download_id=None):
-        """
-        Internal implementation of download_ticker_data.
-        
-        The debug mode is inherited from the parent method.
-        """
-        self.logger.info(f"Fetching historical data for {ticker}")
-        await self._ensure_connected()
-        
-        # Use the provided download_id or create one based on the ticker
-        download_key = download_id if download_id is not None else ticker
-        
-        # Clear any existing progress for this ticker
-        self._init_download_progress(download_key)
-        self._add_download_log(download_key, "Starting historical data download")
-        
-        # Update progress
-        self._update_download_progress(download_key, 0.1, "Checking ticker metadata")
-        
-        # Convert ticker to lowercase for API, uppercase for DB
-        api_ticker = ticker.lower()
-        db_ticker = ticker.upper()
-        
-        # Ensure ticker exists in the database (maintains metadata)
-        ticker_record = await Tickers.get_ticker(db_ticker)
-        if not ticker_record:
-            self._add_download_log(download_key, "Ticker not found, syncing metadata")
-            # Use current debug mode setting when syncing metadata
-            ticker_id = await self.sync_ticker_metadata(api_ticker)
-            if not ticker_id:
-                error_message = f"Failed to sync ticker metadata for {ticker}"
-                self._add_download_log(download_key, error_message)
-                self._update_download_progress(download_key, 1.0, "Failed to sync metadata", "failed")
-                return False, error_message
-        
-        # Update progress    
-        self._update_download_progress(download_key, 0.2, "Calculating date range")
-        
-        # Calculate the date range
-        end_date = datetime.now()
-        
-        if full_history:
-            # Use the get_full_history method for complete history
-            self._update_download_progress(download_key, 0.3, "Fetching full history")
-            self._add_download_log(download_key, "Downloading complete history from listing date")
-            
-            try:
-                df = self.tiingo.get_full_history(
-                    ticker=api_ticker,  # Use lowercase for API call
-                    frequency="1min",
-                    include_extended_hours=include_extended_hours
-                )
-            except Exception as e:
-                error_message = str(e)
-                self._add_download_log(download_key, f"Error fetching data: {error_message}")
-                self._update_download_progress(download_key, 1.0, f"API error: {error_message}", "failed")
-                self.logger.error(f"Error fetching data for {ticker}: {error_message}")
-                return False, error_message
-        else:
-            # Use the specified days back
-            start_date = end_date - timedelta(days=days_back)
-            self._add_download_log(download_key, f"Fetching {days_back} days of price history")
-            
-            # Update progress
-            self._update_download_progress(download_key, 0.3, "Fetching data from Tiingo")
-            
-            # Get the data from Tiingo
-            try:
-                self._add_download_log(download_key, f"Fetching data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-                df = self.tiingo.get_historical_intraday(
-                    ticker=api_ticker,
-                    start_date=start_date,
-                    end_date=end_date,
-                    frequency="1min",
-                    include_extended_hours=include_extended_hours
-                )
-            except Exception as e:
-                error_message = str(e)
-                self._add_download_log(download_key, f"Error fetching data: {error_message}")
-                self._update_download_progress(download_key, 1.0, f"API error: {error_message}", "failed")
-                self.logger.error(f"Error fetching data for {ticker}: {error_message}")
-                return False, error_message
-        
-        # Update progress    
-        self._update_download_progress(download_key, 0.5, f"Processing {len(df) if df is not None else 0} records")
-        
-        if df is None or df.empty:
-            error_message = "No data returned from Tiingo"
-            self._add_download_log(download_key, error_message)
-            self._update_download_progress(download_key, 1.0, "Completed - No data found", "failed")
-            self.logger.warning(f"No data returned for {ticker}")
-            return False, error_message
-        
-        # Update progress    
-        self._update_download_progress(download_key, 0.7, "Processing data for storage")
-        
-        # Convert to format expected by RawData - explicitly map date to timestamp
-        df_for_db = df.reset_index().rename(columns={
-            'date': 'timestamp',
-        })
-        
-        # Update progress
-        self._update_download_progress(download_key, 0.8, "Storing data in database")
-        
-        # Store in the database
-        try:
-            self._add_download_log(download_key, f"Storing {len(df_for_db)} rows in database")
-            
-            # Ensure the ticker column is uppercase for consistency
-            df_for_db['ticker'] = db_ticker
-            
-            result = await RawData.add_dataframe(df_for_db)
-            
-            if result["success"]:
-                self._add_download_log(download_key, f"Successfully stored {result['rows_added']} rows in database")
-                self._update_download_progress(download_key, 1.0, "Completed successfully", "success")
-                return True, None
+                self.logger.info(f"Fetching full history for {ticker} from {ipo_date.isoformat()}")
+                start_date = ipo_date
             else:
-                error_message = result.get("error", "Unknown database error")
-                self._add_download_log(download_key, f"Database error: {error_message}")
-                self._update_download_progress(download_key, 1.0, f"Database error: {error_message}", "failed")
-                return False, error_message
+                # Use a reasonable default period (30 days)
+                start_date = current_time - timedelta(days=30)
+                self.logger.info(f"Fetching recent history for {ticker} from {start_date.isoformat()}")
+            
+            # Determine the month boundaries
+            start_year = start_date.year
+            start_month = start_date.month
+            end_year = current_time.year
+            end_month = current_time.month
+            
+            # Calculate total months to process
+            total_months = (end_year - start_year) * 12 + (end_month - start_month) + 1
+            self.logger.info(f"Downloading {total_months} months of data for {ticker}")
+            
+            # Initialize an empty DataFrame to store all the data
+            all_data = pd.DataFrame()
+            total_rows_added = 0
+            months_processed = 0
+            
+            # Process each month from start to end
+            current_year = start_year
+            current_month = start_month
+            
+            while (current_year < end_year) or (current_year == end_year and current_month <= end_month):
+                # Create a date in the current month
+                if current_month == 12:
+                    next_year = current_year + 1
+                    next_month = 1
+                else:
+                    next_year = current_year
+                    next_month = current_month + 1
                 
-        except Exception as e:
-            error_message = str(e)
-            self._add_download_log(download_key, f"Database error: {error_message}")
-            self._update_download_progress(download_key, 1.0, f"Database error: {error_message}", "failed")
-            self.logger.error(f"Database error while storing data for {ticker}: {error_message}")
-            return False, error_message
-    
-    def _init_download_progress(self, ticker: str):
-        """Initialize download progress for a ticker."""
-        self._download_progress[ticker] = {
-            'progress': 0.0,
-            'status': 'in_progress',
-            'message': 'Initializing',
-            'start_time': datetime.now().isoformat(),
-            'end_time': None
-        }
-        
-        # Initialize log for this ticker
-        if ticker not in self._download_logs:
-            self._download_logs[ticker] = []
-        self._add_download_log(ticker, "Download initialized")
-    
-    def _update_download_progress(self, ticker: str, progress: float, message: str, status: str = 'in_progress'):
-        """Update download progress for a ticker."""
-        if ticker not in self._download_progress:
-            self._init_download_progress(ticker)
-            
-        self._download_progress[ticker].update({
-            'progress': progress,
-            'message': message,
-            'status': status
-        })
-        
-        # If status is completed or failed, set end time
-        if status in ['success', 'completed', 'failed']:
-            self._download_progress[ticker]['end_time'] = datetime.now().isoformat()
-            
-        # Add to log
-        self._add_download_log(ticker, message)
-        
-    def _add_download_log(self, ticker: str, message: str):
-        """Add a message to the download log for a ticker."""
-        if ticker not in self._download_logs:
-            self._download_logs[ticker] = []
-            
-        # Add the message directly to the logs list as a string
-        self._download_logs[ticker].append(message)
-        
-        # Also log to application logger
-        self.logger.info(f"[{ticker.upper()}] {message}")
-    
-    def get_download_progress(self, ticker: str = None) -> Dict:
-        """Get download progress for a ticker or all tickers."""
-        if ticker:
-            return self._download_progress.get(ticker, {
-                'progress': 0.0,
-                'status': 'not_started',
-                'message': 'Download not started',
-                'start_time': None,
-                'end_time': None
-            })
-        else:
-            return self._download_progress
-    
-    def get_download_logs(self, ticker: str = None) -> List[str]:
-        """Get download logs for a ticker or all tickers."""
-        if ticker:
-            # Return the logs for the specific ticker (empty list if none found)
-            if ticker not in self._download_logs:
-                self.logger.warning(f"No logs found for ticker {ticker}")
-                return []
-            return self._download_logs.get(ticker, [])
-        else:
-            return self._download_logs
-    
-    def get_download_status(self, ticker: str = None) -> Dict:
-        """
-        Get download status for a ticker or all tickers.
-        This is an alias for get_download_progress to maintain backward compatibility.
-        
-        Args:
-            ticker: Optional ticker symbol to get status for. If None, returns all statuses.
-            
-        Returns:
-            Dictionary containing download status information
-        """
-        return self.get_download_progress(ticker)
-    
-    def clear_download_history(self, ticker: str = None):
-        """Clear download history for a ticker or all tickers."""
-        if ticker:
-            if ticker in self._download_progress:
-                del self._download_progress[ticker]
-            if ticker in self._download_logs:
-                del self._download_logs[ticker]
-        else:
-            self._download_progress = {}
-            self._download_logs = {}
-    
-    def get_debug_info(self):
-        """
-        Get debug information about the service configuration.
-        
-        Returns:
-            dict: A dictionary with debug information
-        """
-        return {
-            "debug_mode": self.debug_mode,
-            "tiingo_base_url": self.tiingo.base_url,
-            "tiingo_iex_url": self.tiingo.iex_url,
-            "rate_limit": self.tiingo.rate_limit,
-            "api_key_masked": self._mask_api_key(self.tiingo.api_key) if self.tiingo.api_key else None
-        }
-    
-    def construct_debug_url(self, ticker, days_back=7, frequency="1min", include_extended_hours=True, start_date=None, end_date=None):
-        """
-        Construct a debug URL that can be used to manually verify the API call in a browser.
-        Masks the API key for security.
-        
-        Args:
-            ticker (str): The ticker symbol to test
-            days_back (int, optional): Number of days to look back. Defaults to 7.
-            frequency (str, optional): Data frequency. Defaults to "1min".
-            include_extended_hours (bool, optional): Whether to include extended hours data. Defaults to True.
-            start_date (str or datetime, optional): Override start date. If None, it's calculated from days_back.
-            end_date (str or datetime, optional): Override end date. If None, it's today.
-            
-        Returns:
-            str: A URL that can be used to manually verify the API call
-        """
-        # Calculate dates if not provided
-        if end_date is None:
-            end_date = datetime.now()
-        if start_date is None and days_back > 0:
-            start_date = end_date - timedelta(days=days_back)
-            
-        # Convert datetime objects to strings if needed
-        if isinstance(start_date, datetime):
-            start_date = start_date.strftime("%Y-%m-%d")
-        if isinstance(end_date, datetime):
-            end_date = end_date.strftime("%Y-%m-%d")
-            
-        # Use lowercase ticker for API calls
-        api_ticker = ticker.lower()
-        
-        # Get base URL from Tiingo client
-        url = f"{self.tiingo.iex_url}/{api_ticker}/prices"
-        
-        # Construct query string
-        params = {
-            "startDate": start_date,
-            "endDate": end_date,
-            "resampleFreq": frequency,
-            "columns": "date,open,high,low,close,volume",
-            "format": "json",
-            "token": self._mask_api_key(self.tiingo.api_key),
-            "afterHours": "true" if include_extended_hours else "false"
-        }
-        
-        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-        return f"{url}?{query_string}"
-    
-    async def trace_api_call(self, ticker, days_back=7, include_extended_hours=True):
-        """
-        Perform a test API call with detailed logging and return debug information.
-        This is useful for diagnosing issues with API calls.
-        
-        Args:
-            ticker (str): The ticker symbol to test
-            days_back (int, optional): Number of days to look back. Defaults to 7.
-            include_extended_hours (bool, optional): Whether to include extended hours data. Defaults to True.
-            
-        Returns:
-            dict: A dictionary with:
-                - success: Whether the API call was successful
-                - debug_info: Debug information including URLs, response details, etc.
-                - error: Details about the error if it failed
-        """
-        # Temporarily enable debug mode for this call
-        original_debug_mode = self.debug_mode
-        self.debug_mode = True
-        
-        try:
-            self.logger.info(f"Tracing API call for ticker: {ticker}")
-            
-            # Generate a debug URL for manual inspection
-            debug_url = self.construct_debug_url(ticker, days_back)
-            
-            # Prepare dates for the API call
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days_back)
-            
-            # Get the basic debug information
-            debug_info = self.get_debug_info()
-            
-            # Add call-specific details
-            debug_info.update({
-                "ticker": ticker,
-                "api_url": debug_url,
-                "days_back": days_back,
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "include_extended_hours": include_extended_hours
-            })
-            
-            # Attempt the API call
-            try:
-                # Use lowercase ticker for API calls
-                api_ticker = ticker.lower()
+                self.logger.info(f"Downloading {ticker} month {months_processed+1}/{total_months}: {current_year}-{current_month:02d}")
                 
-                # This will make the actual API call
-                df = self.tiingo.get_historical_intraday(
+                # Create a date to represent this month (day doesn't matter, Tiingo uses only year/month)
+                current_date = datetime(current_year, current_month, 1, tzinfo=timezone.utc)
+                
+                # Get data from Tiingo for this month (just need a date in the month)
+                df_chunk = self.tiingo.get_historical_intraday(
                     ticker=api_ticker,
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=current_date,
                     frequency="1min",
                     include_extended_hours=include_extended_hours
                 )
                 
-                # Record API call success details
-                success = True if df is not None and not df.empty else False
-                if success:
-                    debug_info["data_points"] = len(df)
-                    debug_info["first_timestamp"] = df.index[0].strftime("%Y-%m-%d %H:%M:%S") if len(df) > 0 else None
-                    debug_info["last_timestamp"] = df.index[-1].strftime("%Y-%m-%d %H:%M:%S") if len(df) > 0 else None
+                if df_chunk is not None and not df_chunk.empty:
+                    # Convert and prepare data for database
+                    df_chunk_for_db = df_chunk.reset_index().rename(columns={
+                        'date': 'timestamp',
+                    })
+                    df_chunk_for_db['ticker'] = db_ticker
+                    
+                    # Store this month's data in the database
+                    chunk_result = await RawData.add_dataframe(df_chunk_for_db)
+                    
+                    if chunk_result["success"]:
+                        rows_added = chunk_result.get('rows_added', 0)
+                        total_rows_added += rows_added
+                        self.logger.info(f"Successfully added {rows_added} rows for {ticker} ({current_year}-{current_month:02d})")
+                        
+                        # Append to our all_data DataFrame for result reporting
+                        if all_data.empty:
+                            all_data = df_chunk.copy()
+                        else:
+                            all_data = pd.concat([all_data, df_chunk])
+                    else:
+                        error_msg = chunk_result.get("error", "Unknown database error")
+                        self.logger.error(f"Error storing {ticker} data for {current_year}-{current_month:02d}: {error_msg}")
                 else:
-                    error_message = "API call succeeded but returned empty data"
-                    debug_info["error"] = error_message
-                    return {
-                        "success": False,
-                        "debug_info": debug_info,
-                        "error": error_message
-                    }
+                    self.logger.warning(f"No data returned for {ticker} for month {current_year}-{current_month:02d}")
                 
+                # Move to the next month
+                months_processed += 1
+                current_month = next_month
+                current_year = next_year
+            
+            # Return final results
+            if total_rows_added > 0:
                 return {
                     "success": True,
-                    "debug_info": debug_info
+                    "ticker": ticker,
+                    "rows_added": total_rows_added,
+                    "months_processed": months_processed,
+                    "start_date": all_data.index.min().isoformat() if not all_data.empty else start_date.isoformat(),
+                    "end_date": all_data.index.max().isoformat() if not all_data.empty else current_time.isoformat()
                 }
-                
-            except Exception as e:
-                # Record API call failure details
-                error_message = str(e)
-                error_type = type(e).__name__
-                
-                # Add error details to debug info
-                debug_info["error_type"] = error_type
-                debug_info["error_message"] = error_message
-                
-                # For HTTP errors, include status code
-                if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
-                    debug_info["status_code"] = e.response.status_code
-                    # For 404 errors, note that the ticker may not exist
-                    if e.response.status_code == 404:
-                        debug_info["ticker_exists"] = False
-                        debug_info["suggestion"] = "The ticker symbol may not exist or be supported by Tiingo"
-                
-                self.logger.error(f"API trace error: {error_type}: {error_message}")
-                
+            else:
                 return {
-                    "success": False,
-                    "debug_info": debug_info,
-                    "error": error_message
+                    "success": False, 
+                    "ticker": ticker,
+                    "error": "No data could be retrieved and stored",
+                    "months_processed": months_processed
                 }
                 
         except Exception as e:
-            # This catches any errors in our tracing code, not in the API call itself
-            error_message = f"Error during trace: {str(e)}"
-            self.logger.error(error_message)
-            return {
-                "success": False,
-                "error": error_message
-            }
-        finally:
-            # Restore original debug mode
-            self.debug_mode = original_debug_mode
+            self.logger.error(f"Error downloading data for {ticker}: {str(e)}")
+            return {"success": False, "ticker": ticker, "error": str(e)}
     
-    def _mask_api_key(self, api_key):
+    async def update_recent_data(self, ticker: str, include_extended_hours: bool = True) -> Dict:
         """
-        Mask an API key for secure display in debug information.
-        Shows only the first and last 4 characters.
+        Update recent data for a ticker by comparing the most recent database entry with current time.
+        
+        This method will:
+        1. Directly query the TimescaleDB for the most recent timestamp for the ticker
+        2. Download data for the months between that timestamp and current time
+        3. Store the new data in the database
+        
+        Note: Tiingo's API works on a month basis for intraday data, so we request whole months
+        even if we only need data from partway through the month.
         
         Args:
-            api_key (str): The API key to mask
+            ticker: The ticker symbol to update
+            include_extended_hours: Whether to include extended hours data
             
         Returns:
-            str: The masked API key
+            Dictionary with information about the update operation
         """
-        if not api_key or len(api_key) < 8:
-            return "***API_KEY_MASKED***"
-            
-        visible_chars = 4  # Show first and last 4 characters
-        masked_key = api_key[:visible_chars] + "*" * (len(api_key) - 2 * visible_chars) + api_key[-visible_chars:]
-        return masked_key
-    
-    async def database_diagnostics(self, include_tables=True, test_query=True):
-        """
-        Run database diagnostics to troubleshoot connection issues.
-        
-        Args:
-            include_tables (bool): Whether to check table information
-            test_query (bool): Whether to run a test query
-            
-        Returns:
-            dict: Diagnostic information about the database connection
-        """
-        result = {
-            "timestamp": datetime.now().isoformat(),
-            "service_info": {
-                "debug_mode": self.debug_mode,
-                "is_connected": self._is_connected,
-                "use_test_db": self.use_test_db
-            },
-            "connection_status": "unknown",
-            "connection_error": None,
-        }
-        
-        # Temporarily enable debug mode for diagnostics if not already enabled
-        original_debug_mode = self.debug_mode
-        if not self.debug_mode:
-            self.set_debug_mode(True)
-            
         try:
-            # Try to connect to the database
-            self.logger.info("Running database diagnostics...")
             await self._ensure_connected()
             
-            result["connection_status"] = "connected"
+            # Convert ticker format
+            db_ticker = ticker.upper()
+            api_ticker = ticker.lower()
             
-            # Get database connection information
-            if self._db:
-                result["database_info"] = self._db.get_connection_info()
+            # Get the current time in UTC
+            current_time = datetime.now(timezone.utc)
+            current_year = current_time.year
+            current_month = current_time.month
+            
+            # Directly query the database for the most recent timestamp
+            query = f"""
+            SELECT MAX(timestamp) as latest_time
+            FROM raw_data_{api_ticker}
+            """
+            
+            try:
+                # Execute the query directly
+                latest_record = await self._db.fetchval(query)
                 
-                # Try to get table information if requested
-                if include_tables:
-                    try:
-                        tables_info, raw_data_tables, processed_tables = await self.get_database_info()
-                        result["tables"] = {
-                            "count": len(tables_info),
-                            "raw_data_tables": raw_data_tables,
-                            "processed_tables": processed_tables
-                        }
-                    except Exception as e:
-                        result["tables_error"] = str(e)
-                
-                # Try a simple test query if requested
-                if test_query:
-                    try:
-                        # Run a simple query to verify database functionality
-                        test_result = await self._db.fetchval("SELECT current_timestamp")
-                        result["test_query"] = {
-                            "success": test_result is not None,
-                            "result": str(test_result)
-                        }
-                    except Exception as e:
-                        result["test_query"] = {
-                            "success": False,
-                            "error": str(e)
-                        }
+                if latest_record:
+                    # We found a timestamp - use its month as our starting point
+                    # If we're already in the current month, we only need to fetch the current month
+                    start_date = latest_record
+                    start_year = start_date.year
+                    start_month = start_date.month
+                    
+                    # If the latest data is from the current month, we just need to update this month
+                    if start_year == current_year and start_month == current_month:
+                        self.logger.info(f"Latest data for {ticker} is from the current month. Updating current month.")
+                        months_to_update = [(current_year, current_month)]
+                    else:
+                        # Calculate all months between the latest data and now
+                        months_to_update = []
+                        update_year = start_year
+                        update_month = start_month
                         
-        except Exception as e:
-            result["connection_status"] = "error"
-            result["connection_error"] = str(e)
-            import traceback
-            result["error_traceback"] = traceback.format_exc()
-            
-        finally:
-            # Restore original debug mode if we changed it
-            if original_debug_mode != self.debug_mode:
-                self.set_debug_mode(original_debug_mode)
-                
-        return result
-    
-    async def verify_tables(self, ticker=None):
-        """
-        Verify database tables for a specific ticker or all raw data tables.
-        
-        Args:
-            ticker (str, optional): Specific ticker to check. If None, checks all raw data tables.
-            
-        Returns:
-            dict: Information about table status and structure
-        """
-        await self._ensure_connected()
-        
-        result = {
-            "timestamp": datetime.now().isoformat(),
-            "tables_checked": 0,
-            "tables_ok": 0,
-            "tables_with_issues": 0,
-            "table_details": {}
-        }
-        
-        try:
-            # Get all tables info
-            tables_info, raw_data_tables, processed_tables = await self.get_database_info()
-            
-            # If a specific ticker is provided, check only that table
-            if ticker:
-                ticker = ticker.upper()  # Standardize to uppercase
-                table_name = f"raw_data_{ticker.lower()}"  # Lowercase for table name
-                tables_to_check = [table_name] if table_name in raw_data_tables else []
-                if not tables_to_check:
-                    result["error"] = f"Table for ticker {ticker} not found"
-            else:
-                # Check all raw data tables
-                tables_to_check = raw_data_tables
-            
-            result["tables_checked"] = len(tables_to_check)
-            
-            # Check each table
-            for table_name in tables_to_check:
-                table_result = await self._check_table_structure(table_name)
-                result["table_details"][table_name] = table_result
-                
-                if table_result["status"] == "ok":
-                    result["tables_ok"] += 1
+                        # Always update at least the month of the latest record (to get any missing days)
+                        # and continue through the current month
+                        while (update_year < current_year) or (update_year == current_year and update_month <= current_month):
+                            months_to_update.append((update_year, update_month))
+                            
+                            if update_month == 12:
+                                update_year += 1
+                                update_month = 1
+                            else:
+                                update_month += 1
+                        
+                        self.logger.info(f"Found latest data for {ticker} from {start_date.isoformat()}. Updating {len(months_to_update)} months.")
                 else:
-                    result["tables_with_issues"] += 1
+                    # No data found - check if we need to sync ticker metadata first
+                    ticker_record = await Tickers.get_ticker(db_ticker)
+                    if not ticker_record:
+                        self.logger.info(f"Ticker {ticker} not found, syncing metadata")
+                        await self.sync_ticker_metadata(api_ticker)
+                    
+                    # Use Tiingo's API to determine the appropriate start date
+                    self.logger.info(f"No existing data found for {ticker}. Using Tiingo to determine start date.")
+                    listing_date = self.tiingo.get_listing_date(api_ticker)
+                    
+                    if listing_date:
+                        # Use listing date or 30 days ago, whichever is more recent
+                        thirty_days_ago = current_time - timedelta(days=30)
+                        start_date = max(listing_date, thirty_days_ago)
+                        self.logger.info(f"Using start date from listing information: {start_date.isoformat()}")
+                    else:
+                        # Default to 30 days of data if we can't determine listing date
+                        start_date = current_time - timedelta(days=30)
+                        self.logger.info(f"Using default 30-day lookback period: {start_date.isoformat()}")
+                    
+                    # Set up months to update - just use the download_ticker_data method
+                    # which handles month-by-month downloading
+                    download_result = await self.download_ticker_data(
+                        ticker=ticker,
+                        include_extended_hours=include_extended_hours,
+                        full_history=False  # Just get recent data
+                    )
+                    return download_result
+            except Exception as db_error:
+                # Table may not exist yet or other DB error
+                self.logger.warning(f"Error querying latest timestamp for {ticker}: {str(db_error)}")
+                
+                # When table doesn't exist, check ticker metadata first
+                ticker_record = await Tickers.get_ticker(db_ticker)
+                if not ticker_record:
+                    self.logger.info(f"Ticker {ticker} not found, syncing metadata")
+                    await self.sync_ticker_metadata(api_ticker)
+                
+                # Determine a reasonable start date based on market data availability
+                self.logger.info(f"Table for {ticker} may not exist yet. Using Tiingo to determine start date.")
+                listing_date = self.tiingo.get_listing_date(api_ticker)
+                
+                if listing_date:
+                    # Use listing date or 30 days ago, whichever is more recent
+                    thirty_days_ago = current_time - timedelta(days=30)
+                    start_date = max(listing_date, thirty_days_ago)
+                    self.logger.info(f"Using start date from listing information: {start_date.isoformat()}")
+                else:
+                    # Default to 30 days of data if we can't determine listing date
+                    start_date = current_time - timedelta(days=30)
+                    self.logger.info(f"Using default 30-day lookback period: {start_date.isoformat()}")
+                
+                # Use the download_ticker_data method which handles month-by-month downloading
+                download_result = await self.download_ticker_data(
+                    ticker=ticker,
+                    include_extended_hours=include_extended_hours,
+                    full_history=False  # Just get recent data
+                )
+                return download_result
+            
+            # If we got this far, we have specific months to update
+            # Process each month individually
+            total_rows_added = 0
+            all_data = pd.DataFrame()
+            months_processed = 0
+            
+            for year, month in months_to_update:
+                self.logger.info(f"Updating {ticker} for month {year}-{month:02d}")
+                
+                # Create a date object for this month (day doesn't matter for Tiingo)
+                month_date = datetime(year, month, 1, tzinfo=timezone.utc)
+                
+                # Get data from Tiingo for this month
+                df = self.tiingo.get_historical_intraday(
+                    ticker=api_ticker,
+                    start_date=month_date,
+                    frequency="1min",
+                    include_extended_hours=include_extended_hours
+                )
+                
+                # Check if we received data
+                if df is None or df.empty:
+                    self.logger.warning(f"No data available for {ticker} for month {year}-{month:02d}")
+                    months_processed += 1
+                    continue
+                
+                # Process Tiingo data format
+                df_for_db = df.reset_index().rename(columns={
+                    'date': 'timestamp',
+                })
+                df_for_db['ticker'] = db_ticker
+                
+                # Store in the database
+                result = await RawData.add_dataframe(df_for_db)
+                months_processed += 1
+                
+                if result["success"]:
+                    rows_added = result.get('rows_added', 0)
+                    total_rows_added += rows_added
+                    self.logger.info(f"Successfully added {rows_added} rows for {ticker} ({year}-{month:02d})")
+                    
+                    # Append to our all_data DataFrame for result reporting
+                    if all_data.empty:
+                        all_data = df.copy()
+                    else:
+                        all_data = pd.concat([all_data, df])
+                else:
+                    error_msg = result.get("error", "Unknown database error")
+                    self.logger.error(f"Error storing {ticker} data for {year}-{month:02d}: {error_msg}")
+            
+            # Return results
+            if total_rows_added > 0:
+                return {
+                    "success": True,
+                    "ticker": ticker,
+                    "rows_added": total_rows_added,
+                    "months_processed": months_processed,
+                    "start_date": all_data.index.min().isoformat() if not all_data.empty else start_date.isoformat(),
+                    "end_date": all_data.index.max().isoformat() if not all_data.empty else current_time.isoformat()
+                }
+            else:
+                return {
+                    "success": True,  # Still a success case - maybe no new data for the period
+                    "ticker": ticker,
+                    "message": "No new data available or added", 
+                    "rows_added": 0,
+                    "months_processed": months_processed
+                }
             
         except Exception as e:
-            result["error"] = str(e)
-            if self.debug_mode:
-                import traceback
-                result["error_traceback"] = traceback.format_exc()
-                
-        return result
-    
-    async def _check_table_structure(self, table_name):
+            self.logger.error(f"Error updating recent data for {ticker}: {str(e)}")
+            return {"success": False, "ticker": ticker, "error": str(e)}
+
+    async def bulk_update_tickers(self, tickers: List[str], include_extended_hours: bool = True) -> Dict:
         """
-        Check the structure of a specific table.
+        Update recent data for multiple tickers in sequence.
         
         Args:
-            table_name (str): The name of the table to check
+            tickers: List of ticker symbols to update
+            include_extended_hours: Whether to include extended hours data
             
         Returns:
-            dict: Information about the table structure
+            Dictionary with information about the update operation
         """
-        result = {
-            "status": "unknown",
-            "row_count": 0,
-            "columns": [],
-            "primary_key": None,
-            "indexes": [],
-            "issues": []
+        results = {
+            "tickers_processed": 0,
+            "tickers_successful": 0,
+            "tickers_failed": 0,
+            "details": {}
         }
         
-        try:
-            # Check if table exists
-            exists_query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name = $1
-            );
-            """
-            exists = await self._db.fetchval(exists_query, table_name)
+        for ticker in tickers:
+            result = await self.update_recent_data(ticker, include_extended_hours)
+            results["tickers_processed"] += 1
             
-            if not exists:
-                result["status"] = "error"
-                result["issues"].append("Table does not exist")
-                return result
-            
-            # Get column information
-            columns_query = """
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns
-            WHERE table_name = $1
-            ORDER BY ordinal_position;
-            """
-            columns = await self._db.fetch(columns_query, table_name)
-            
-            if not columns:
-                result["status"] = "error"
-                result["issues"].append("Table exists but has no columns")
-                return result
-            
-            result["columns"] = [
-                {
-                    "name": col["column_name"],
-                    "type": col["data_type"],
-                    "nullable": col["is_nullable"] == "YES"
-                }
-                for col in columns
-            ]
-            
-            # Check for primary key
-            pk_query = """
-            SELECT a.attname as column_name
-            FROM pg_index i
-            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE i.indrelid = $1::regclass
-            AND i.indisprimary;
-            """
-            pk_columns = await self._db.fetch(pk_query, table_name)
-            if pk_columns:
-                result["primary_key"] = [col["column_name"] for col in pk_columns]
-            
-            # Check for indexes
-            index_query = """
-            SELECT
-                i.relname as index_name,
-                a.attname as column_name,
-                ix.indisunique as is_unique
-            FROM
-                pg_class t,
-                pg_class i,
-                pg_index ix,
-                pg_attribute a
-            WHERE
-                t.oid = ix.indrelid
-                and i.oid = ix.indexrelid
-                and a.attrelid = t.oid
-                and a.attnum = ANY(ix.indkey)
-                and t.relkind = 'r'
-                and t.relname = $1
-            ORDER BY
-                i.relname;
-            """
-            indexes = await self._db.fetch(index_query, table_name)
-            
-            # Group indexes by name
-            index_dict = {}
-            for idx in indexes:
-                index_name = idx["index_name"]
-                if index_name not in index_dict:
-                    index_dict[index_name] = {
-                        "name": index_name,
-                        "columns": [],
-                        "unique": idx["is_unique"]
-                    }
-                index_dict[index_name]["columns"].append(idx["column_name"])
-            
-            result["indexes"] = list(index_dict.values())
-            
-            # Get row count
-            count_query = f"SELECT COUNT(*) FROM {table_name};"
-            result["row_count"] = await self._db.fetchval(count_query)
-            
-            # Check for common issues
-            if not result["primary_key"]:
-                result["issues"].append("Table has no primary key")
-            
-            required_columns = ["timestamp", "open", "high", "low", "close", "volume", "ticker"]
-            missing_columns = [col for col in required_columns if col not in [c["name"] for c in result["columns"]]]
-            if missing_columns:
-                result["issues"].append(f"Missing required columns: {', '.join(missing_columns)}")
-            
-            # Set final status
-            if result["issues"]:
-                result["status"] = "warning"
+            if result["success"]:
+                results["tickers_successful"] += 1
             else:
-                result["status"] = "ok"
+                results["tickers_failed"] += 1
                 
-        except Exception as e:
-            result["status"] = "error"
-            result["issues"].append(f"Error checking table: {str(e)}")
-            if self.debug_mode:
-                import traceback
-                result["error_traceback"] = traceback.format_exc()
+            results["details"][ticker] = result
             
-        return result
+        return results
+
+    def get_debug_info(self) -> Dict:
+        """
+        Get debug information about the service and Tiingo API client.
+        
+        Returns:
+            Dictionary with debug information
+        """
+        # Mask API key for security
+        masked_key = "********"
+        if self.tiingo.api_key and len(self.tiingo.api_key) > 8:
+            masked_key = self.tiingo.api_key[:4] + "****" + self.tiingo.api_key[-4:]
+            
+        return {
+            "debug_mode": self.debug_mode,
+            "is_connected": self._is_connected,
+            "use_test_db": self.use_test_db,
+            "tiingo_base_url": self.tiingo.base_url,
+            "tiingo_iex_url": self.tiingo.iex_url,
+            "rate_limiter": {
+                "hourly_limit": self.tiingo.rate_limiter.hourly_limit,
+                "daily_limit": self.tiingo.rate_limiter.daily_limit,
+                "hourly_requests": len(self.tiingo.rate_limiter.hourly_timestamps),
+                "daily_requests": len(self.tiingo.rate_limiter.daily_timestamps)
+            },
+            "api_key_masked": masked_key
+        }
+        
+    def set_debug_mode(self, enabled=True):
+        """
+        Enable or disable debug mode.
+        
+        Args:
+            enabled: Whether to enable debug mode
+        """
+        self.debug_mode = enabled
+        self.tiingo.set_debug_mode(enabled)
+        self.logger.info(f"Debug mode {'enabled' if enabled else 'disabled'}")
+        
