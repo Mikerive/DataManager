@@ -10,9 +10,9 @@ from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
 
 from backend.services.BarProcessingService.BarProcessingService import BarProcessingService
-from backend.db.ProcessedData import ProcessedData
-from backend.db.RawData import RawData
-from backend.db.Tickers import Tickers
+from backend.models.db.ProcessedData import ProcessedData
+from backend.models.db.RawData import RawData
+from backend.models.db.Tickers import Tickers
 from backend.services.BarOptimizationService.utils.BarOptimizer import BarOptimizer
 
 class MLBarOptimizationService:
