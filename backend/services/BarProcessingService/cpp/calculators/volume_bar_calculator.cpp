@@ -29,23 +29,36 @@ BarResult VolumeBarCalculator::calculate(
     // Start the first bar
     double current_bar_volume = 0.0;
     size_t bar_start_idx = 0;
+    double bar_high = highs[0];
+    double bar_low = lows[0];
     
     for (size_t i = 0; i < volumes.size(); ++i) {
+        // Update high/low for the current bar
+        if (i == bar_start_idx) {
+            bar_high = highs[i];
+            bar_low = lows[i];
+        } else {
+            bar_high = std::max(bar_high, highs[i]);
+            bar_low = std::min(bar_low, lows[i]);
+        }
+        
         // Add current volume to the accumulator
         current_bar_volume += volumes[i];
         
         // Check if we've reached the threshold or end of data
         if (current_bar_volume >= volume_threshold || i == volumes.size() - 1) {
-            // Add the bar to the result
-            result.add_bar(
-                i,                  // index
-                timestamps[bar_start_idx],  // start_time
-                timestamps[i],      // end_time
-                opens[bar_start_idx],      // open
-                *std::max_element(&highs[bar_start_idx], &highs[i] + 1), // high
-                *std::min_element(&lows[bar_start_idx], &lows[i] + 1),   // low
-                closes[i],          // close
-                current_bar_volume  // volume
+            // Add the bar with preserved timeframe information
+            add_bar_with_preserved_timeframe(
+                result,
+                timestamps,
+                i,                      // timestamp index (use last point in bar)
+                bar_start_idx,          // start_time index
+                i,                      // end_time index
+                opens[bar_start_idx],   // open
+                bar_high,               // high
+                bar_low,                // low
+                closes[i],              // close
+                current_bar_volume      // volume
             );
             
             // Reset for the next bar
@@ -57,6 +70,11 @@ BarResult VolumeBarCalculator::calculate(
                 break;
             }
         }
+    }
+    
+    // Verify timeframe preservation
+    if (!result.verify_timestamps()) {
+        throw std::runtime_error("Timeframe integrity verification failed in volume bar calculation");
     }
     
     return result;

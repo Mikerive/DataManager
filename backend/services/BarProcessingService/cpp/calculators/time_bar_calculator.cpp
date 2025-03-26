@@ -24,54 +24,105 @@ BarResult TimeBarCalculator::calculate(
     // Initialize result
     BarResult result(params.bar_type, params.ratio);
     
-    // Since the timestamps are now just indices, we need to use data point count as our interval
-    // The ratio parameter is the number of data points (minutes) to include in each bar
-    int64_t data_points_per_bar = static_cast<int64_t>(params.ratio);
+    // Time interval in seconds (params.ratio is in seconds)
+    int64_t interval_seconds = static_cast<int64_t>(params.ratio);
     
-    // Loop through data in chunks of data_points_per_bar
+    // Convert to milliseconds for timestamp comparison
+    int64_t interval_ms = interval_seconds * 1000;
+    
+    // Find the first timestamp
+    int64_t first_timestamp = timestamps[0];
+    
+    // Calculate the start time for the first bar
+    // This aligns bars to fixed time boundaries (e.g., 5-minute bars start at :00, :05, :10, etc.)
+    int64_t current_bar_start_time = first_timestamp;
+    int64_t current_bar_end_time = current_bar_start_time + interval_ms;
+    
     size_t bar_start_idx = 0;
+    double bar_open = opens[0];
+    double bar_high = highs[0];
+    double bar_low = lows[0];
+    double bar_close = closes[0];
     double bar_volume = 0.0;
     
+    // Loop through all data points
     for (size_t i = 0; i < timestamps.size(); ++i) {
-        // Accumulate volume
-        bar_volume += volumes[i];
+        int64_t current_time = timestamps[i];
         
-        // Check if we've reached the interval (number of data points) or end of data
-        bool is_last = (i == timestamps.size() - 1);
-        bool interval_complete = ((i - bar_start_idx + 1) >= data_points_per_bar);
-        
-        if (interval_complete || is_last) {
-            // If no data in this bar, skip
-            if (i < bar_start_idx) {
-                continue;
+        // If this is the first point in a bar or we're in the same bar
+        if (i == bar_start_idx || current_time < current_bar_end_time) {
+            // Accumulate data for this bar
+            if (i == bar_start_idx) {
+                bar_open = opens[i];
+                bar_high = highs[i];
+                bar_low = lows[i];
+            } else {
+                bar_high = std::max(bar_high, highs[i]);
+                bar_low = std::min(bar_low, lows[i]);
             }
             
-            // Add the bar to the result
-            result.add_bar(
-                i,                      // index
-                timestamps[bar_start_idx], // start_time (index of first data point)
-                timestamps[i],          // end_time (index of last data point)
-                opens[bar_start_idx],   // open
-                *std::max_element(&highs[bar_start_idx], &highs[i] + 1), // high
-                *std::min_element(&lows[bar_start_idx], &lows[i] + 1),   // low
-                closes[i],              // close
-                bar_volume              // volume
+            bar_close = closes[i];
+            bar_volume += volumes[i];
+        } else {
+            // We've crossed a bar boundary, finish the current bar
+            
+            // Add the bar with preserved timeframe information
+            add_bar_with_preserved_timeframe(
+                result,
+                timestamps,
+                bar_start_idx,                // timestamp index (use start of bar)
+                bar_start_idx,                // start time index
+                i - 1,                        // end time index (previous point)
+                bar_open,                     // open
+                bar_high,                     // high
+                bar_low,                      // low
+                closes[i - 1],                // close (previous point's close)
+                bar_volume                    // volume
             );
             
-            // Reset for the next bar
-            if (interval_complete) {
-                // Start the new bar at the next index
-                bar_start_idx = i + 1;
-                
-                // Reset bar volume
-                bar_volume = 0.0;
+            // Start a new bar
+            bar_start_idx = i;
+            current_bar_start_time = current_bar_end_time;
+            current_bar_end_time = current_bar_start_time + interval_ms;
+            
+            // If the current timestamp is already past this new bar boundary,
+            // adjust the boundaries to catch up (this handles gaps in data)
+            while (current_time >= current_bar_end_time) {
+                current_bar_start_time = current_bar_end_time;
+                current_bar_end_time = current_bar_start_time + interval_ms;
             }
             
-            // If we've reached the end, we're done
-            if (is_last) {
-                break;
-            }
+            // Initialize the new bar with the current point
+            bar_open = opens[i];
+            bar_high = highs[i];
+            bar_low = lows[i];
+            bar_close = closes[i];
+            bar_volume = volumes[i];
         }
+    }
+    
+    // Handle the last bar if it has data
+    if (bar_volume > 0 && bar_start_idx < timestamps.size()) {
+        size_t last_idx = timestamps.size() - 1;
+        
+        // Add the final bar with preserved timeframe information
+        add_bar_with_preserved_timeframe(
+            result,
+            timestamps,
+            bar_start_idx,            // timestamp index (use start of bar)
+            bar_start_idx,            // start time index
+            last_idx,                 // end time index
+            bar_open,                 // open
+            bar_high,                 // high
+            bar_low,                  // low
+            closes[last_idx],         // close
+            bar_volume                // volume
+        );
+    }
+    
+    // Verify timeframe preservation
+    if (!result.verify_timestamps()) {
+        throw std::runtime_error("Timeframe integrity verification failed in time bar calculation");
     }
     
     return result;

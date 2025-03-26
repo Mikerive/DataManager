@@ -199,8 +199,10 @@ def generate_realistic_price_charts(volume_bars, tick_bars, time_bars, entropy_b
     plt.ylim(y_min, y_max)  # Consistent y-axis scaling
     
     # Add reference line for original data close price at start
+    # Find the closest timestamp in original data that's not after the first bar timestamp
     first_timestamp = volume_bars['timestamp'].iloc[0]
-    original_at_first = original_data[original_data['timestamp'] <= first_timestamp].iloc[-1]['close']
+    closest_idx = find_closest_timestamp_idx(original_data, first_timestamp)
+    original_at_first = original_data.iloc[closest_idx]['close']
     plt.axhline(y=original_at_first, color='r', linestyle='--', alpha=0.5, 
                 label=f'Original Price at Start: {original_at_first:.2f}')
     plt.legend()
@@ -224,7 +226,8 @@ def generate_realistic_price_charts(volume_bars, tick_bars, time_bars, entropy_b
     
     # Add reference line for original data close price at start
     first_timestamp = tick_bars['timestamp'].iloc[0]
-    original_at_first = original_data[original_data['timestamp'] <= first_timestamp].iloc[-1]['close']
+    closest_idx = find_closest_timestamp_idx(original_data, first_timestamp)
+    original_at_first = original_data.iloc[closest_idx]['close']
     plt.axhline(y=original_at_first, color='r', linestyle='--', alpha=0.5, 
                 label=f'Original Price at Start: {original_at_first:.2f}')
     plt.legend()
@@ -245,7 +248,8 @@ def generate_realistic_price_charts(volume_bars, tick_bars, time_bars, entropy_b
         
         # Add reference line for original data close price at start
         first_timestamp = time_bars['timestamp'].iloc[0]
-        original_at_first = original_data[original_data['timestamp'] <= first_timestamp].iloc[-1]['close']
+        closest_idx = find_closest_timestamp_idx(original_data, first_timestamp)
+        original_at_first = original_data.iloc[closest_idx]['close']
         plt.axhline(y=original_at_first, color='r', linestyle='--', alpha=0.5, 
                     label=f'Original Price at Start: {original_at_first:.2f}')
         plt.legend()
@@ -274,7 +278,8 @@ def generate_realistic_price_charts(volume_bars, tick_bars, time_bars, entropy_b
     
     # Add reference line for original data close price at start
     first_timestamp = entropy_bars['timestamp'].iloc[0]
-    original_at_first = original_data[original_data['timestamp'] <= first_timestamp].iloc[-1]['close']
+    closest_idx = find_closest_timestamp_idx(original_data, first_timestamp)
+    original_at_first = original_data.iloc[closest_idx]['close']
     plt.axhline(y=original_at_first, color='r', linestyle='--', alpha=0.5, 
                 label=f'Original Price at Start: {original_at_first:.2f}')
     plt.legend()
@@ -333,6 +338,25 @@ def generate_realistic_price_charts(volume_bars, tick_bars, time_bars, entropy_b
     prepare_ohlc_data(entropy_bars.iloc[:50], "Entropy Bars")
     
     print("All charts have been generated and saved.")
+
+def find_closest_timestamp_idx(df, target_timestamp):
+    """Find the index of the closest timestamp in the DataFrame to the target timestamp."""
+    timestamps = df['timestamp'].values
+    # Convert all to seconds from epoch for consistent comparison
+    if isinstance(target_timestamp, pd.Timestamp) or isinstance(target_timestamp, np.datetime64):
+        target_ts = pd.Timestamp(target_timestamp).timestamp()
+    else:
+        # Assume it's already a datetime
+        target_ts = target_timestamp.timestamp()
+    
+    # Convert all timestamps to seconds from epoch
+    ts_seconds = np.array([pd.Timestamp(ts).timestamp() for ts in timestamps])
+    
+    # Calculate absolute differences
+    abs_diff = np.abs(ts_seconds - target_ts)
+    
+    # Return index of minimum difference
+    return np.argmin(abs_diff)
 
 if __name__ == "__main__":
     volume_bars, tick_bars, time_bars, entropy_bars, batch_results = test_cpp_integration()
