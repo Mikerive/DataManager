@@ -4,9 +4,14 @@ Bar Processing Service
 This module provides a service for processing different types of bars from raw market data.
 """
 import os
+import sys
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Union, Optional, Any
+
+# Add the current directory to the path so the extension can be imported
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
 class BarProcessingService:
     """
@@ -22,16 +27,25 @@ class BarProcessingService:
         """
         self.use_cpp = False
         self.calculator = None
+        self.data = None
         
         try:
             # Try to import and use the C++ implementation
-            from .bar_calculator_wrapper import BarCalculator
+            try:
+                # First try to import from the cpp_ext directory
+                from cpp_ext import bar_calculator_cpp
+                from bar_calculator_wrapper import BarCalculator
+            except ImportError:
+                # Fall back to using the fully qualified module path
+                from backend.services.BarProcessingService.cpp_ext import bar_calculator_cpp
+                from backend.services.BarProcessingService.bar_calculator_wrapper import BarCalculator
+                
             self.calculator = BarCalculator()
             self.use_cpp = True
             print("Using C++ implementation for bar processing")
-        except ImportError:
+        except ImportError as e:
             # Fall back to Python implementation
-            print("C++ implementation not available, using Python implementation")
+            print(f"C++ implementation not available: {str(e)}, using Python implementation")
             self.use_cpp = False
     
     def load_data(self, df: pd.DataFrame) -> None:

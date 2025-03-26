@@ -5,10 +5,13 @@ This provides an easy-to-use interface to the high-performance C++ code.
 
 import pandas as pd
 import numpy as np
+import os
+import sys
 from typing import Dict, List, Union, Optional, Any
 
-# This will be imported when the C++ extension is built
-# bar_calculator_cpp = None  # Will be set when extension is built
+# Add the current directory to the path so the extension can be imported
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
 class BarCalculator:
     """
@@ -21,12 +24,19 @@ class BarCalculator:
         Initialize the BarCalculator.
         """
         try:
-            from backend.services.BarProcessingService.cpp_ext import bar_calculator_cpp
+            # Try multiple import paths to find the extension
+            try:
+                from cpp_ext import bar_calculator_cpp
+            except ImportError:
+                # Fall back to absolute path
+                from backend.services.BarProcessingService.cpp_ext import bar_calculator_cpp
+                
             self._cpp_calculator = bar_calculator_cpp.BarCalculator()
             self._cpp_module = bar_calculator_cpp
             self._data_loaded = False
-        except ImportError:
-            raise ImportError("C++ extension not built. Run setup.py to build the extension.")
+            print("Successfully loaded C++ extension for bar calculation")
+        except ImportError as e:
+            raise ImportError(f"C++ extension not built or not found. Error: {e}. Run setup.py to build the extension.")
     
     def set_data(self, df: pd.DataFrame) -> None:
         """
@@ -38,15 +48,17 @@ class BarCalculator:
         if not all(col in df.columns for col in ['timestamp', 'open', 'high', 'low', 'close', 'volume']):
             raise ValueError("DataFrame must have columns: timestamp, open, high, low, close, volume")
         
-        # Convert timestamp to int64 (milliseconds)
-        if pd.api.types.is_datetime64_any_dtype(df['timestamp']):
-            timestamps = df['timestamp'].astype(np.int64) // 10**6  # nanoseconds to milliseconds
-        else:
-            timestamps = df['timestamp'].astype(np.int64)
+        # Store the original DataFrame for later reference
+        self._original_df = df.copy()
+        
+        # Convert timestamp to int64 indices for C++ processing
+        # We don't convert to milliseconds anymore, just use indices
+        # This allows proper handling of minute-level data
+        timestamps = np.arange(len(df), dtype=np.int64)  # Use simple indices
             
         # Set the data in the C++ calculator
         self._cpp_calculator.set_data(
-            timestamps.values,
+            timestamps,
             df['open'].values,
             df['high'].values,
             df['low'].values,
@@ -55,8 +67,9 @@ class BarCalculator:
         )
         
         # Store timestamps for result conversion
-        self._timestamps = timestamps.values
+        self._timestamps = timestamps
         self._data_loaded = True
+        print(f"Data loaded into C++ calculator: {len(df)} rows")
     
     def _create_params(self, bar_type: str, ratio: float, 
                      window_size: int = 100, method: str = "shannon", 
@@ -98,11 +111,16 @@ class BarCalculator:
         # Convert result to dictionary
         result_dict = result.to_dict(self._timestamps)
         
+        # Map the indices back to actual timestamps from the original DataFrame
+        ts_indices = [int(idx) for idx in result_dict['timestamps']]
+        start_indices = [int(idx) for idx in result_dict['start_times']]
+        end_indices = [int(idx) for idx in result_dict['end_times']]
+        
         # Create DataFrame
         df = pd.DataFrame({
-            'timestamp': pd.to_datetime(result_dict['timestamps'], unit='ms'),
-            'start_time': pd.to_datetime(result_dict['start_times'], unit='ms'),
-            'end_time': pd.to_datetime(result_dict['end_times'], unit='ms'),
+            'timestamp': self._original_df['timestamp'].iloc[ts_indices].values,
+            'start_time': self._original_df['timestamp'].iloc[start_indices].values,
+            'end_time': self._original_df['timestamp'].iloc[end_indices].values,
             'open': result_dict['opens'],
             'high': result_dict['highs'],
             'low': result_dict['lows'],

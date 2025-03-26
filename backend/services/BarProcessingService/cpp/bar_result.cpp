@@ -1,4 +1,5 @@
 #include "bar_result.h"
+#include <pybind11/stl.h>  // Add this include for automatic STL conversions
 
 /**
  * Constructor for BarResult.
@@ -18,28 +19,44 @@ BarResult::BarResult(const std::string& type, double r)
 py::dict BarResult::to_dict(py::array timestamps) const {
     py::dict result;
     
-    // Extract actual timestamps from indices
-    py::array_t<py::object> ts_out(timestamp_indices.size());
-    py::array_t<py::object> start_ts_out(start_time_indices.size());
-    py::array_t<py::object> end_ts_out(end_time_indices.size());
+    // Create new arrays for timestamps from indices
+    py::list ts_out;
+    py::list start_ts_out;
+    py::list end_ts_out;
     
     // Get the array buffer for timestamps
-    // Note: This requires careful handling since timestamps are Python objects
+    // Use py::cast to convert indices to Python objects
     for (size_t i = 0; i < timestamp_indices.size(); i++) {
-        ts_out.mutable_at(i) = timestamps[timestamp_indices[i]];
-        start_ts_out.mutable_at(i) = timestamps[start_time_indices[i]];
-        end_ts_out.mutable_at(i) = timestamps[end_time_indices[i]];
+        ts_out.append(timestamps[py::cast(timestamp_indices[i])]);
+        start_ts_out.append(timestamps[py::cast(start_time_indices[i])]);
+        end_ts_out.append(timestamps[py::cast(end_time_indices[i])]);
     }
     
     // Add arrays to the result dictionary
-    result["timestamp"] = ts_out;
-    result["start_time"] = start_ts_out;
-    result["end_time"] = end_ts_out;
-    result["open"] = opens;
-    result["high"] = highs;
-    result["low"] = lows;
-    result["close"] = closes;
-    result["volume"] = volumes;
+    result["timestamps"] = ts_out;
+    result["start_times"] = start_ts_out;
+    result["end_times"] = end_ts_out;
+    
+    // Convert C++ vectors to Python lists for numeric data
+    py::list opens_list;
+    py::list highs_list;
+    py::list lows_list;
+    py::list closes_list;
+    py::list volumes_list;
+    
+    for (size_t i = 0; i < opens.size(); i++) {
+        opens_list.append(opens[i]);
+        highs_list.append(highs[i]);
+        lows_list.append(lows[i]);
+        closes_list.append(closes[i]);
+        volumes_list.append(volumes[i]);
+    }
+    
+    result["opens"] = opens_list;
+    result["highs"] = highs_list;
+    result["lows"] = lows_list;
+    result["closes"] = closes_list;
+    result["volumes"] = volumes_list;
     result["bar_type"] = bar_type;
     result["ratio"] = ratio;
     

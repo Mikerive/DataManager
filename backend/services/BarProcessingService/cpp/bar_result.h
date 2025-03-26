@@ -47,6 +47,11 @@ public:
     double ratio;
     
     /**
+     * Default constructor.
+     */
+    BarResult() : bar_type(""), ratio(0.0) {}
+    
+    /**
      * Constructor.
      * 
      * @param type Bar type string
