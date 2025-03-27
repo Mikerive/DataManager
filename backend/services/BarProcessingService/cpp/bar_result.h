@@ -4,6 +4,7 @@
 #include <pybind11/numpy.h>
 #include <vector>
 #include <string>
+#include "bar_params.h"
 
 namespace py = pybind11;
 
@@ -49,8 +50,11 @@ public:
     /** Volumes for each bar */
     std::vector<double> volumes;
     
-    /** Type of bar ('volume', 'tick', 'time', 'entropy', etc.) */
-    std::string bar_type;
+    /** Type of bar (BarType enum) */
+    BarType bar_type;
+    
+    /** Bar type as string (for backward compatibility) */
+    std::string bar_type_string;
     
     /** The parameter value used for the calculation */
     double ratio;
@@ -58,10 +62,10 @@ public:
     /**
      * Default constructor.
      */
-    BarResult() : bar_type(""), ratio(0.0) {}
+    BarResult() : bar_type(BarType::Time), bar_type_string("time"), ratio(0.0) {}
     
     /**
-     * Constructor.
+     * Constructor with string bar type.
      * 
      * @param type Bar type string
      * @param r Parameter ratio/threshold value
@@ -69,12 +73,20 @@ public:
     BarResult(const std::string& type, double r);
     
     /**
+     * Constructor with enum bar type.
+     * 
+     * @param type Bar type enum
+     * @param r Parameter ratio/threshold value
+     */
+    BarResult(BarType type, double r);
+    
+    /**
      * Convert the bar results to a Python dictionary.
      * 
      * @param timestamps Python array containing the original timestamps
      * @return Python dictionary with bar data
      */
-    py::dict to_dict(py::array timestamps) const;
+    py::dict to_dict(py::array timestamps_arr) const;
     
     /**
      * Add a new bar to the results.

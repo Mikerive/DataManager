@@ -65,50 +65,47 @@ BarResult BarCalculator::calculate_bars(const BarParams& params) {
     }
     
     // Route to the appropriate calculator based on bar type
-    if (params.bar_type == "volume") {
-        return volume_calculator_->calculate(
-            timestamps_, opens_, highs_, lows_, closes_, volumes_, params
-        );
-    } else if (params.bar_type == "tick") {
-        return tick_calculator_->calculate(
-            timestamps_, opens_, highs_, lows_, closes_, volumes_, params
-        );
-    } else if (params.bar_type == "time") {
-        return time_calculator_->calculate(
-            timestamps_, opens_, highs_, lows_, closes_, volumes_, params
-        );
-    } else if (params.bar_type == "entropy") {
-        return entropy_calculator_->calculate(
-            timestamps_, opens_, highs_, lows_, closes_, volumes_, params
-        );
-    } else {
-        throw std::runtime_error("Unknown bar type: " + params.bar_type);
+    switch (params.bar_type) {
+        case BarType::Volume:
+            return volume_calculator_->calculate(
+                timestamps_, opens_, highs_, lows_, closes_, volumes_, params
+            );
+        
+        case BarType::Tick:
+            return tick_calculator_->calculate(
+                timestamps_, opens_, highs_, lows_, closes_, volumes_, params
+            );
+        
+        case BarType::Time:
+            return time_calculator_->calculate(
+                timestamps_, opens_, highs_, lows_, closes_, volumes_, params
+            );
+        
+        case BarType::Entropy:
+            return entropy_calculator_->calculate(
+                timestamps_, opens_, highs_, lows_, closes_, volumes_, params
+            );
+        
+        default:
+            std::string error_msg = "Unsupported bar type: " + to_string(params.bar_type);
+            throw std::runtime_error(error_msg);
     }
 }
 
-std::unordered_map<std::string, BarResult> BarCalculator::batch_process(
-    const std::vector<BarParams>& params_list
-) {
-    // Validate that data has been set
-    if (data_size_ == 0) {
-        throw std::runtime_error("No data set for calculation");
-    }
-    
-    std::unordered_map<std::string, BarResult> results;
-    
-    // Process each parameter set
-    for (const auto& params : params_list) {
-        // Create a unique key for this parameter set
-        std::string key = params.bar_type + "_" + std::to_string(params.ratio);
-        
-        // Calculate the bars for this parameter set
-        results[key] = calculate_bars(params);
-        
-        // Verify timeframe preservation for each result
-        if (!results[key].verify_timestamps()) {
-            throw std::runtime_error("Timeframe integrity verification failed for " + key);
+std::vector<BarResult> BarCalculator::batch_process(const std::vector<BarParams>& all_params) {
+    std::vector<BarResult> results;
+    for (const auto& params : all_params) {
+        try {
+            results.push_back(calculate_bars(params));
+        } catch (const std::exception& e) {
+            std::string error_msg = "Error processing bar type " + 
+                to_string(params.bar_type) + ": " + e.what();
+            throw std::runtime_error(error_msg);
         }
     }
-    
     return results;
+}
+
+std::string get_bar_type_name(BarType bar_type) {
+    return to_string(bar_type);
 } 

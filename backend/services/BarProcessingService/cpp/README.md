@@ -233,4 +233,48 @@ If you encounter issues building the extension:
 
 For runtime issues:
 1. Ensure the extension is built with the correct Python version.
-2. Check for compatibility issues between the C++ extension and the Python interpreter. 
+2. Check for compatibility issues between the C++ extension and the Python interpreter.
+
+## Adaptive Thresholds
+
+All bar types (except Time Bars) use adaptive thresholds calculated from the average of recent data:
+
+- **Volume Bars**: The threshold is the average volume of the last N bars multiplied by a ratio
+- **Tick Bars**: The threshold is the average tick count of the last N bars multiplied by a ratio
+- **Entropy Bars**: The threshold is the average entropy of the last N bars multiplied by a ratio
+
+### Parameters
+
+- `ratio`: The multiplier applied to the calculated average (default: 1.0)
+- `lookback_window`: The number of previous bars to include in the average calculation (default: 20)
+
+## Example Usage
+
+```cpp
+// Set parameters for volume bars
+BarParams params(BarType::Volume, 1.5);  // 1.5x the average volume
+params.lookback_window = 20;  // Use last 20 bars for average
+
+// Calculate volume bars
+VolumeBarCalculator calculator;
+BarResult result = calculator.calculate(timestamps, opens, highs, lows, closes, volumes, params);
+```
+
+## Adding New Bar Types
+
+To add a new bar type:
+
+1. Add the type to the `BarType` enum in `bar_params.h`
+2. Create a new calculator class that inherits from `BaseCalculator`
+3. Implement the `calculate` method
+4. Use the `calculate_adaptive_threshold` method to determine the threshold based on historical data
+
+## Timestamp Preservation
+
+The implementation preserves timestamp information throughout the bar calculation process. Each bar contains:
+
+- `timestamp`: The timestamp of the bar (typically the last data point in the bar)
+- `start_time`: The timestamp of the first data point in the bar
+- `end_time`: The timestamp of the last data point in the bar
+
+This allows for accurate backtesting and analysis. 

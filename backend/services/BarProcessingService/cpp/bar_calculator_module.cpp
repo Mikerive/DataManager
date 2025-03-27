@@ -20,16 +20,37 @@ std::vector<T> numpy_to_vector(py::array_t<T> array) {
 /**
  * Main module definition for the bar calculator
  */
-PYBIND11_MODULE(bar_calculator_cpp, m) {
+PYBIND11_MODULE(_bar_processor, m) {
     m.doc() = "C++ Bar calculator module for efficient bar computation";
+    
+    // Define the BarType enum
+    py::enum_<BarType>(m, "BarType")
+        .value("Time", BarType::Time)
+        .value("Volume", BarType::Volume)
+        .value("Tick", BarType::Tick)
+        .value("Dollar", BarType::Dollar)
+        .value("Information", BarType::Information)
+        .value("Entropy", BarType::Entropy)
+        .export_values();
     
     // Define the BarParams struct
     py::class_<BarParams>(m, "BarParams")
         .def(py::init<>())
+        .def(py::init([](BarType type, double ratio) {
+            // Explicitly call the 2-parameter constructor
+            return std::unique_ptr<BarParams>(new BarParams(
+                type, 
+                ratio, 
+                20,     // default lookback
+                20,     // default window_size
+                "shannon", // default method
+                2.0     // default q_param
+            ));
+        }))
         .def_readwrite("bar_type", &BarParams::bar_type)
         .def_readwrite("ratio", &BarParams::ratio)
         .def_readwrite("window_size", &BarParams::window_size)
-        .def_readwrite("avg_window", &BarParams::avg_window)
+        .def_readwrite("lookback_window", &BarParams::lookback_window)
         .def_readwrite("method", &BarParams::method)
         .def_readwrite("q_param", &BarParams::q_param);
     
@@ -86,15 +107,15 @@ PYBIND11_MODULE(bar_calculator_cpp, m) {
             }
             
             // Call the C++ method
-            auto result = self.batch_process(cpp_params);
+            auto results = self.batch_process(cpp_params);
             
-            // Convert the result back to a Python dictionary
-            py::dict py_result;
-            for (const auto& pair : result) {
-                py_result[py::str(pair.first)] = pair.second;
+            // Convert the result back to a Python list
+            py::list py_results;
+            for (const auto& result : results) {
+                py_results.append(result);
             }
             
-            return py_result;
+            return py_results;
         });
 
     // Add version information

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "pybind11>=2.6.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bar_processor"
+version = "0.1.0"
+description = "C++ implementation of bar calculation for financial time series data"
+readme = "README.md"
+requires-python = ">=3.6"
+license = "MIT"
+authors = [
+    {name = "AlgoTrader Team", email = "info@algotrader.com"}
+]
+
+[project.urls]
+repository = "https://github.com/algotrader/barprocessingservice" 

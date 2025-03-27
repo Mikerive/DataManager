@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+setup.py
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/bar_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/bar_calculator_module.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/bar_result.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/calculators/entropy_bar_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/calculators/tick_bar_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/calculators/time_bar_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/calculators/volume_bar_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/utils/adaptive_threshold_calculator.cpp
+C:/Programs/AlgoTrader/backend/services/BarProcessingService/cpp/utils/entropy_utils.cpp
+bar_processor.egg-info/PKG-INFO
+bar_processor.egg-info/SOURCES.txt
+bar_processor.egg-info/dependency_links.txt
+bar_processor.egg-info/not-zip-safe
+bar_processor.egg-info/top_level.txt

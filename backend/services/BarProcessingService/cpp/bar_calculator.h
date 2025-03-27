@@ -61,11 +61,11 @@ public:
     /**
      * Process multiple bar types in a single pass.
      * 
-     * @param params_list Vector of parameter sets for different bar types
-     * @return Map of bar type to bar calculation results
+     * @param all_params Vector of parameter sets for different bar types
+     * @return Vector of bar calculation results
      */
-    std::unordered_map<std::string, BarResult> batch_process(
-        const std::vector<BarParams>& params_list
+    std::vector<BarResult> batch_process(
+        const std::vector<BarParams>& all_params
     );
 
 private:

@@ -5,13 +5,37 @@
 #include <stdexcept>
 
 /**
- * Constructor for BarResult.
- * 
- * @param type Bar type string
- * @param r Parameter ratio/threshold value
+ * Constructor with string bar type.
  */
-BarResult::BarResult(const std::string& type, double r) 
-    : bar_type(type), ratio(r) {}
+BarResult::BarResult(const std::string& type, double r) : ratio(r) {
+    // Convert string to enum
+    if (type == "volume") {
+        bar_type = BarType::Volume;
+    } else if (type == "tick") {
+        bar_type = BarType::Tick;
+    } else if (type == "time") {
+        bar_type = BarType::Time;
+    } else if (type == "entropy") {
+        bar_type = BarType::Entropy;
+    } else if (type == "dollar") {
+        bar_type = BarType::Dollar;
+    } else if (type == "information") {
+        bar_type = BarType::Information;
+    } else {
+        // Default to time
+        bar_type = BarType::Time;
+    }
+    
+    bar_type_string = type;
+}
+
+/**
+ * Constructor with enum bar type.
+ */
+BarResult::BarResult(BarType type, double r) : bar_type(type), ratio(r) {
+    // Convert enum to string for backwards compatibility
+    bar_type_string = to_string(type);
+}
 
 /**
  * Convert the bar results to a Python dictionary.
@@ -19,24 +43,23 @@ BarResult::BarResult(const std::string& type, double r)
  * @param timestamps Python array containing the original timestamps
  * @return Python dictionary with bar data
  */
-py::dict BarResult::to_dict(py::array timestamps) const {
+py::dict BarResult::to_dict(py::array timestamps_arr) const {
     py::dict result;
     
-    // Get the raw pointer to the timestamps array
-    py::buffer_info buf = timestamps.request();
-    int64_t* timestamps_ptr = static_cast<int64_t*>(buf.ptr);
+    // Convert data to NumPy arrays
+    size_t bar_count = size();
     
-    // Create numpy arrays for the result data
-    auto ts_array = py::array_t<int64_t>(size());
-    auto opens_array = py::array_t<double>(size());
-    auto highs_array = py::array_t<double>(size());
-    auto lows_array = py::array_t<double>(size());
-    auto closes_array = py::array_t<double>(size());
-    auto volumes_array = py::array_t<double>(size());
-    auto start_time_array = py::array_t<int64_t>(size());
-    auto end_time_array = py::array_t<int64_t>(size());
+    py::array_t<int64_t> ts_array(bar_count);
+    py::array_t<double> opens_array(bar_count);
+    py::array_t<double> highs_array(bar_count);
+    py::array_t<double> lows_array(bar_count);
+    py::array_t<double> closes_array(bar_count);
+    py::array_t<double> volumes_array(bar_count);
+    py::array_t<int64_t> start_time_array(bar_count);
+    py::array_t<int64_t> end_time_array(bar_count);
     
-    // Get raw pointers to the numpy arrays
+    // Get raw pointers from the arrays
+    auto timestamps_ptr = static_cast<int64_t*>(timestamps_arr.request().ptr);
     auto ts_ptr = static_cast<int64_t*>(ts_array.request().ptr);
     auto opens_ptr = static_cast<double*>(opens_array.request().ptr);
     auto highs_ptr = static_cast<double*>(highs_array.request().ptr);
@@ -49,10 +72,10 @@ py::dict BarResult::to_dict(py::array timestamps) const {
     // Fill the arrays
     for (size_t i = 0; i < size(); ++i) {
         // Use stored actual timestamps if available, otherwise use indices
-        if (!timestamps.empty()) {
-            ts_ptr[i] = timestamps.size() > 0 ? timestamps[i] : timestamps_ptr[timestamp_indices[i]];
-            start_time_ptr[i] = start_timestamps.size() > 0 ? start_timestamps[i] : timestamps_ptr[start_time_indices[i]];
-            end_time_ptr[i] = end_timestamps.size() > 0 ? end_timestamps[i] : timestamps_ptr[end_time_indices[i]];
+        if (!this->timestamps.empty()) {
+            ts_ptr[i] = this->timestamps.size() > 0 ? this->timestamps[i] : timestamps_ptr[timestamp_indices[i]];
+            start_time_ptr[i] = this->start_timestamps.size() > 0 ? this->start_timestamps[i] : timestamps_ptr[start_time_indices[i]];
+            end_time_ptr[i] = this->end_timestamps.size() > 0 ? this->end_timestamps[i] : timestamps_ptr[end_time_indices[i]];
         } else {
             ts_ptr[i] = timestamps_ptr[timestamp_indices[i]];
             start_time_ptr[i] = timestamps_ptr[start_time_indices[i]];
@@ -75,7 +98,7 @@ py::dict BarResult::to_dict(py::array timestamps) const {
     result["volumes"] = volumes_array;
     result["start_times"] = start_time_array;
     result["end_times"] = end_time_array;
-    result["bar_type"] = bar_type;
+    result["bar_type"] = bar_type_string;
     result["ratio"] = ratio;
     
     return result;
